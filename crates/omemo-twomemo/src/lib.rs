@@ -628,3 +628,18 @@ pub fn parse_key_exchange(kex_bytes: &[u8]) -> Result<ParsedKeyExchange, Twomemo
 pub fn fixed_priv_provider(privs: Vec<[u8; 32]>) -> Box<dyn DhPrivProvider> {
     Box::new(FixedDhPrivProvider::new(privs))
 }
+
+/// Read the inner `OMEMOMessage.dh_pub` from a serialized
+/// `OMEMOAuthenticatedMessage` without otherwise touching ratchet state.
+/// Used when bootstrapping a passive `TwomemoSession` from a KEX so that
+/// the receiver knows the sender's first DH ratchet pub.
+pub fn peek_dh_pub(auth_msg_bytes: &[u8]) -> Result<[u8; 32], TwomemoError> {
+    let auth = OmemoAuthenticatedMessage::decode(auth_msg_bytes)?;
+    let inner = OmemoMessage::decode(auth.message.as_slice())?;
+    if inner.dh_pub.len() != 32 {
+        return Err(TwomemoError::HeaderMismatch);
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&inner.dh_pub);
+    Ok(out)
+}

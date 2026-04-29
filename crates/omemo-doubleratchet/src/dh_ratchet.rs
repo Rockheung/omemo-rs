@@ -49,6 +49,34 @@ pub trait DhPrivProvider {
     fn clone_box(&self) -> Box<dyn DhPrivProvider>;
 }
 
+/// Production: OS-randomness-backed priv provider. Calls
+/// `rand_core::OsRng::fill_bytes` per [`generate_priv`] invocation.
+///
+/// `x25519-dalek::StaticSecret::from(_)` clamps the input internally on the
+/// first DH op, so we don't need to clamp here — the raw 32 bytes flow
+/// straight into the ratchet.
+#[derive(Default, Clone)]
+pub struct OsRngDhPrivProvider;
+
+impl OsRngDhPrivProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl DhPrivProvider for OsRngDhPrivProvider {
+    fn generate_priv(&mut self) -> [u8; 32] {
+        use rand_core::{OsRng, RngCore};
+        let mut buf = [0u8; 32];
+        OsRng.fill_bytes(&mut buf);
+        buf
+    }
+
+    fn clone_box(&self) -> Box<dyn DhPrivProvider> {
+        Box::new(Self)
+    }
+}
+
 /// Test-only: priv keys popped from the front of a queue. Panics if exhausted.
 #[derive(Clone)]
 pub struct FixedDhPrivProvider {

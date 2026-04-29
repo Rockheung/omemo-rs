@@ -79,9 +79,11 @@ test, all green together.
 - [x] Bundle verification (XEdDSA SPK sig over `_encode_public_key(spk_pub) = spk_pub`)
 - [x] Active session (Alice initiates) — `get_shared_secret_active`
 - [x] Passive session (Bob receives KEX) — `get_shared_secret_passive`
-- [ ] OPK lifecycle (consumed-once enforcement) — currently the caller is
-      responsible for deleting the consumed OPK; Stage 3 (omemo-session)
-      will own this when sessions persist.
+- [x] OPK lifecycle (consumed-once enforcement) — implemented in
+      `Store::receive_initial_message` which atomically marks the OPK
+      consumed + persists the new session in one SQLite transaction.
+      Replay attempt fails with `PreKeyAlreadyConsumed`. Tests in
+      `crates/omemo-session/tests/receive_initial.rs`.
 - [x] **Gate**: full active/passive bundle exchange replays byte-equal with
       python-x3dh, 4 cases (3 with-OPK + 1 no-OPK), AD + SS byte-equal,
       bundle including SPK signature byte-equal. ✅
@@ -177,7 +179,12 @@ test, all green together.
       `libsignal-protocol{,-c}` + `openssl{,-sys}`, sources locked to
       crates.io. New `deny` job in CI via EmbarkStudios action. Verified
       local pass + AGPL negative test.
-- [ ] Benchmarks (`criterion`) for HKDF, AES-CBC, scalar mul
+- [x] Benchmarks (`criterion`) for HKDF, AES-CBC, scalar mul +
+      DH ratchet step + separate-HMACs KDF + OS RNG. Run via
+      `cargo bench -p omemo-doubleratchet --bench crypto`.
+- [x] Production `OsRngDhPrivProvider` in `omemo-doubleratchet` —
+      OS-randomness-backed priv provider (uses `rand_core::OsRng`).
+      Pairs with the existing test-only `FixedDhPrivProvider`.
 - [x] `cargo fmt` + `cargo clippy --all-targets -D warnings` gated in CI —
       `RUSTFLAGS="-D warnings" cargo test --workspace` passes locally
 - [x] `README.md` at repo root — project pitch, status table, license

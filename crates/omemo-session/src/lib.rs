@@ -20,20 +20,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
 
-use omemo_twomemo::{TwomemoSession, TwomemoSessionSnapshot};
+use omemo_doubleratchet::dh_ratchet::DhPrivProvider;
+use omemo_twomemo::{parse_key_exchange, peek_dh_pub, TwomemoSession, TwomemoSessionSnapshot};
+use omemo_x3dh::{
+    get_shared_secret_passive, Header as X3dhHeader, IdentityKeyPair, PreKeyPair, SignedPreKeyPair,
+    X3dhState,
+};
 
 #[derive(Debug, Error)]
 pub enum SessionStoreError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("snapshot decode: {0}")]
-    SnapshotDecode(#[from] omemo_twomemo::TwomemoError),
+    #[error("twomemo: {0}")]
+    Twomemo(#[from] omemo_twomemo::TwomemoError),
+    #[error("dh ratchet: {0}")]
+    DhRatchet(#[from] omemo_doubleratchet::dh_ratchet::DhRatchetError),
+    #[error("x3dh: {0}")]
+    X3dh(#[from] omemo_x3dh::X3dhError),
     #[error("identity not initialised")]
     IdentityMissing,
     #[error("identity already initialised — call reset() first")]
     IdentityAlreadyExists,
     #[error("session not found for {jid}/{device_id}")]
     SessionNotFound { jid: String, device_id: u32 },
+    #[error("kex references unknown spk_id {0}")]
+    UnknownSpkId(u32),
+    #[error("kex references unknown pk_id {0}")]
+    UnknownPkId(u32),
+    #[error("kex references already-consumed pk_id {0}")]
+    PreKeyAlreadyConsumed(u32),
     #[error("schema migration failed at version {version}: {detail}")]
     Migration { version: u32, detail: String },
 }
@@ -473,5 +488,96 @@ impl Store {
             params![bare_jid, device_id],
         )?;
         Ok(n > 0)
+    }
+
+    // ---- high-level helpers ----------------------------------------------
+
+    /// Bootstrap a passive session from a received `OMEMOKeyExchange`.
+    ///
+    /// Looks up our SPK and OPK by the IDs in the KEX, runs X3DH passive,
+    /// reconstructs the twomemo session, decrypts the embedded initial
+    /// message, and atomically (single SQLite transaction) **marks the OPK
+    /// consumed** + persists the session.
+    ///
+    /// This is the API to use in production; doing the same thing manually
+    /// (`get_shared_secret_passive` → `consume_opk` → `save_session`) is
+    /// allowed but easy to get wrong (e.g. consuming the OPK then crashing
+    /// before saving the session). The transaction here closes that hole.
+    ///
+    /// Returns the decrypted M0 plaintext.
+    pub fn receive_initial_message(
+        &mut self,
+        peer_jid: &str,
+        peer_device_id: u32,
+        kex_bytes: &[u8],
+        priv_provider: Box<dyn DhPrivProvider>,
+    ) -> Result<Vec<u8>, SessionStoreError> {
+        // 1) Pure reads — find own keys and parse the KEX.
+        let identity = self
+            .get_identity()?
+            .ok_or(SessionStoreError::IdentityMissing)?;
+        let (pk_id, spk_id, peer_ik_pub_ed, peer_ek_pub, auth_msg_bytes) =
+            parse_key_exchange(kex_bytes)?;
+        let spk = self
+            .get_spk(spk_id)?
+            .ok_or(SessionStoreError::UnknownSpkId(spk_id))?;
+        let opk = self
+            .get_opk(pk_id)?
+            .ok_or(SessionStoreError::UnknownPkId(pk_id))?;
+        if opk.consumed {
+            return Err(SessionStoreError::PreKeyAlreadyConsumed(pk_id));
+        }
+
+        // 2) Pure compute — build X3DH state, run passive, build session,
+        //    decrypt M0. None of this writes to the DB yet.
+        let own_state = X3dhState {
+            identity_key: IdentityKeyPair::Seed(identity.ik_seed),
+            signed_pre_key: SignedPreKeyPair {
+                priv_key: spk.priv_key,
+                sig: spk.sig,
+                timestamp: spk.created_at as u64,
+            },
+            old_signed_pre_key: None,
+            pre_keys: vec![PreKeyPair {
+                priv_key: opk.priv_key,
+            }],
+        };
+        let header = X3dhHeader {
+            identity_key: peer_ik_pub_ed,
+            ephemeral_key: peer_ek_pub,
+            signed_pre_key: spk.pub_key,
+            pre_key: Some(opk.pub_key),
+        };
+        let (x3dh_out, _used_spk) = get_shared_secret_passive(&own_state, &header, b"", true)?;
+
+        let alice_first_dh_pub = peek_dh_pub(&auth_msg_bytes)?;
+        let mut session = TwomemoSession::create_passive(
+            x3dh_out.associated_data,
+            x3dh_out.shared_secret.to_vec(),
+            spk.priv_key,
+            alice_first_dh_pub,
+            priv_provider,
+        )?;
+        let plaintext = session.decrypt_message(&auth_msg_bytes)?;
+
+        // 3) Atomic write — consume OPK + save session in one transaction.
+        let blob = session.snapshot().encode();
+        let now = now_secs();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE prekey SET consumed = 1 WHERE id = ?1 AND consumed = 0",
+            params![pk_id],
+        )?;
+        tx.execute(
+            "INSERT INTO session (bare_jid, device_id, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(bare_jid, device_id) DO UPDATE
+                SET state = excluded.state,
+                    updated_at = excluded.updated_at",
+            params![peer_jid, peer_device_id, &blob[..], now],
+        )?;
+        tx.commit()?;
+
+        Ok(plaintext)
     }
 }
