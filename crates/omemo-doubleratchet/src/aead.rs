@@ -62,11 +62,7 @@ pub enum AeadError {
 
 const HKDF_OUT_LEN: usize = 80;
 
-fn derive(
-    hash: HashFunction,
-    key: &[u8],
-    info: &[u8],
-) -> ([u8; 32], [u8; 32], [u8; 16]) {
+fn derive(hash: HashFunction, key: &[u8], info: &[u8]) -> ([u8; 32], [u8; 32], [u8; 16]) {
     let mut out = [0u8; HKDF_OUT_LEN];
     match hash {
         HashFunction::Sha256 => {
@@ -95,12 +91,14 @@ fn derive(
 fn hmac(hash: HashFunction, key: &[u8], data: &[u8]) -> Vec<u8> {
     match hash {
         HashFunction::Sha256 => {
-            let mut m = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+            let mut m =
+                <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
             m.update(data);
             m.finalize().into_bytes().to_vec()
         }
         HashFunction::Sha512 => {
-            let mut m = <Hmac<Sha512> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+            let mut m =
+                <Hmac<Sha512> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
             m.update(data);
             m.finalize().into_bytes().to_vec()
         }
@@ -116,8 +114,8 @@ pub fn encrypt(
 ) -> Vec<u8> {
     let (mut enc_key, mut auth_key, iv) = derive(hash, key, info);
 
-    let ciphertext = Aes256CbcEnc::new(&enc_key.into(), &iv.into())
-        .encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+    let ciphertext =
+        Aes256CbcEnc::new(&enc_key.into(), &iv.into()).encrypt_padded_vec_mut::<Pkcs7>(plaintext);
 
     let mut mac_input = Vec::with_capacity(associated_data.len() + ciphertext.len());
     mac_input.extend_from_slice(associated_data);

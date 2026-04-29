@@ -60,8 +60,16 @@ fn assert_state(
     r: Option<u64>,
     p: Option<u64>,
 ) {
-    assert_eq!(skr.sending_chain_length(), s, "case {label} op {i}: send_len");
-    assert_eq!(skr.receiving_chain_length(), r, "case {label} op {i}: recv_len");
+    assert_eq!(
+        skr.sending_chain_length(),
+        s,
+        "case {label} op {i}: send_len"
+    );
+    assert_eq!(
+        skr.receiving_chain_length(),
+        r,
+        "case {label} op {i}: recv_len"
+    );
     assert_eq!(
         skr.previous_sending_chain_length(),
         p,

@@ -22,9 +22,10 @@ Ordering reflects dependencies — do top to bottom.
 | 5 — Group OMEMO | ⏳ | 3 omemo-rs + 1 Conversations in MUC |
 | 6 — Real-client interop | ⏳ | Conversations + Dino DM/MUC |
 
-**Stage 1 (whole crypto layer) complete.** 10 replay tests across 8 fixtures,
-all byte-equal with the Syndace Python stack.
-`cargo test --workspace` clean.
+**Stages 1–3 complete.** 29 test result groups green. Cross-cutting:
+README, GitHub Actions CI (fmt + clippy + test + weekly fixture-drift),
+XEP-0420 SCE envelope (Stage 4 prep) all in. `cargo fmt --all --check`
+and `cargo clippy --workspace --all-targets -D warnings` both clean.
 
 ---
 
@@ -167,11 +168,18 @@ test, all green together.
 
 ## Cross-cutting / housekeeping
 
-- [ ] CI: GitHub Actions workflow for `cargo test --workspace`
-- [ ] CI: weekly fixture-regen job to detect upstream drift
+- [x] CI: GitHub Actions workflow `.github/workflows/ci.yml` —
+      cargo fmt --check, clippy `-D warnings`, full workspace test
+- [x] CI: weekly fixture-regen job (cron Mon 06:00 UTC) — installs
+      pinned Syndace packages, regenerates fixtures, fails on drift
 - [ ] CI: `cargo deny` for licence check (block AGPL re-introduction)
 - [ ] Benchmarks (`criterion`) for HKDF, AES-CBC, scalar mul
-- [ ] `cargo fmt` + `cargo clippy --all-targets --all-features -D warnings`
-      gating in CI
-- [ ] `README.md` at repo root (currently no README — public repo could
-      use one once Stage 1 is complete enough to demo)
+- [x] `cargo fmt` + `cargo clippy --all-targets -D warnings` gated in CI —
+      `RUSTFLAGS="-D warnings" cargo test --workspace` passes locally
+- [x] `README.md` at repo root — project pitch, status table, license
+      posture, quickstart, fixture regeneration recipe
+
+### Stage 4 prep (no-server pieces)
+
+- [x] XEP-0420 SCE envelope encode/decode in `omemo-stanza::sce`
+      (6 round-trip + tolerance + negative tests)

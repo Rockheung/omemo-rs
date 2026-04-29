@@ -1,15 +1,19 @@
-//! XEP-0384 v0.9 stanza encoder/decoder for OMEMO 2.
+//! XEP-0384 v0.9 stanza encoder/decoder for OMEMO 2 + XEP-0420 SCE envelope.
 //!
-//! Three element trees are handled:
+//! Element trees:
 //!
 //! 1. `<encrypted xmlns='urn:xmpp:omemo:2'>` — the message envelope
 //!    containing per-recipient encrypted keys + an optional SCE payload.
 //! 2. `<bundle xmlns='urn:xmpp:omemo:2'>` — published per device on PEP.
 //! 3. `<list xmlns='urn:xmpp:omemo:2'>` — per-account device list on PEP.
+//! 4. `<envelope xmlns='urn:xmpp:sce:1'>` — XEP-0420 Stanza Content
+//!    Encryption envelope. See [`sce`].
 //!
 //! Decoding tolerates any attribute order; encoding emits attributes in a
 //! canonical order so that round-trip output is byte-stable. Element key
 //! material is base64-encoded on the wire (RFC 4648, no line wrapping).
+
+pub mod sce;
 
 use std::borrow::Cow;
 use std::io::Cursor;
@@ -110,7 +114,10 @@ pub struct Device {
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
-fn attr_str<'a>(start: &'a BytesStart<'a>, name: &str) -> Result<Option<Cow<'a, str>>, StanzaError> {
+pub(crate) fn attr_str<'a>(
+    start: &'a BytesStart<'a>,
+    name: &str,
+) -> Result<Option<Cow<'a, str>>, StanzaError> {
     for a in start.attributes() {
         let a = a?;
         if a.key == QName(name.as_bytes()) {
@@ -120,7 +127,10 @@ fn attr_str<'a>(start: &'a BytesStart<'a>, name: &str) -> Result<Option<Cow<'a, 
     Ok(None)
 }
 
-fn req_attr<'a>(start: &'a BytesStart<'a>, name: &'static str) -> Result<Cow<'a, str>, StanzaError> {
+pub(crate) fn req_attr<'a>(
+    start: &'a BytesStart<'a>,
+    name: &'static str,
+) -> Result<Cow<'a, str>, StanzaError> {
     attr_str(start, name)?.ok_or(StanzaError::MissingAttr(name))
 }
 
@@ -136,7 +146,10 @@ fn req_u32_attr<'a>(start: &'a BytesStart<'a>, name: &'static str) -> Result<u32
 }
 
 /// Read text content of the current element until its end tag.
-fn read_text(reader: &mut Reader<&[u8]>, end_name: &[u8]) -> Result<String, StanzaError> {
+pub(crate) fn read_text(
+    reader: &mut Reader<&[u8]>,
+    end_name: &[u8],
+) -> Result<String, StanzaError> {
     let mut buf = String::new();
     loop {
         match reader.read_event()? {
@@ -149,15 +162,15 @@ fn read_text(reader: &mut Reader<&[u8]>, end_name: &[u8]) -> Result<String, Stan
     }
 }
 
-fn b64_decode(s: &str) -> Result<Vec<u8>, StanzaError> {
+pub(crate) fn b64_decode(s: &str) -> Result<Vec<u8>, StanzaError> {
     Ok(B64.decode(s.trim().as_bytes())?)
 }
 
-fn b64_encode(bytes: &[u8]) -> String {
+pub(crate) fn b64_encode(bytes: &[u8]) -> String {
     B64.encode(bytes)
 }
 
-fn local_name<'a>(qname: QName<'a>) -> &'a [u8] {
+pub(crate) fn local_name<'a>(qname: QName<'a>) -> &'a [u8] {
     let full: &'a [u8] = qname.0;
     if let Some(idx) = full.iter().position(|&b| b == b':') {
         &full[idx + 1..]
@@ -217,10 +230,9 @@ impl Encrypted {
                                                 {
                                                     let rid = req_u32_attr(&ke, "rid")?;
                                                     let kex = match attr_str(&ke, "kex")? {
-                                                        Some(v) => matches!(
-                                                            v.as_ref(),
-                                                            "true" | "1"
-                                                        ),
+                                                        Some(v) => {
+                                                            matches!(v.as_ref(), "true" | "1")
+                                                        }
                                                         None => false,
                                                     };
                                                     let txt = read_text(&mut reader, b"key")?;
@@ -235,10 +247,9 @@ impl Encrypted {
                                                 {
                                                     let rid = req_u32_attr(&ke, "rid")?;
                                                     let kex = match attr_str(&ke, "kex")? {
-                                                        Some(v) => matches!(
-                                                            v.as_ref(),
-                                                            "true" | "1"
-                                                        ),
+                                                        Some(v) => {
+                                                            matches!(v.as_ref(), "true" | "1")
+                                                        }
                                                         None => false,
                                                     };
                                                     group_keys.push(Key {
@@ -253,9 +264,7 @@ impl Encrypted {
                                                     break;
                                                 }
                                                 Event::Eof => {
-                                                    return Err(StanzaError::MissingElement(
-                                                        "keys",
-                                                    ))
+                                                    return Err(StanzaError::MissingElement("keys"))
                                                 }
                                                 _ => {}
                                             }
@@ -410,9 +419,7 @@ impl Bundle {
                                     });
                                 }
                                 Event::End(e) if local_name(e.name()) == b"prekeys" => break,
-                                Event::Eof => {
-                                    return Err(StanzaError::MissingElement("prekeys"))
-                                }
+                                Event::Eof => return Err(StanzaError::MissingElement("prekeys")),
                                 _ => {}
                             }
                         },

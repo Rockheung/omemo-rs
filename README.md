@@ -1,0 +1,134 @@
+# omemo-rs
+
+A pure-Rust, MIT-licensed implementation of **OMEMO 2** (XEP-0384 v0.9) for
+XMPP. Built to serve as the E2EE layer of an XMPP-based bot orchestrator
+(the planned successor to [nan-curunir](https://github.com/Rockheung/nan-curunir)),
+without pulling AGPL dependencies into the runtime graph.
+
+## Why
+
+The Rust ecosystem's reference for Signal-style E2EE is `signalapp/libsignal`,
+which is **AGPL-3.0**. Implementations of OMEMO 0.3.0 (`oldmemo`) inherit that
+licence transitively. This project sidesteps both by porting the
+permissively-licensed [Syndace Python stack](https://github.com/Syndace) to
+Rust on top of [RustCrypto](https://github.com/RustCrypto) primitives, and
+implementing OMEMO 2 only.
+
+See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
+
+## Status
+
+| Stage | Crate | Status | Gate test |
+|---|---|---|---|
+| 0 | workspace + replay pipeline | ✅ | `kdf_hkdf` |
+| 1.1 | `omemo-xeddsa` | ✅ | `xeddsa` (104 assertions) |
+| 1.2 | `omemo-doubleratchet` | ✅ | 4-msg round-trip with DH step + skip + OOO |
+| 1.3 | `omemo-x3dh` | ✅ | active+passive bundle exchange byte-equal |
+| 1.4 | `omemo-twomemo` | ✅ | 1 KEX + 3 messages, byte-equal protobuf |
+| 2 | `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
+| 3 | `omemo-session` | ✅ | identity + bundle + persist + restart, no re-keying |
+| 4 | `omemo-pep` | ⏳ | needs Prosody server |
+| 5 | Group OMEMO (MUC) | ⏳ | needs Prosody |
+| 6 | Real-client interop | ⏳ | needs Conversations / Dino |
+
+The crypto layer (Stage 1) is byte-equal with the Syndace Python stack on
+every fixture. `cargo test --workspace` passes 28 test result groups.
+
+## Workspace layout
+
+```
+omemo-rs/
+├── crates/
+│   ├── omemo-xeddsa/          # XEdDSA + Curve25519/Ed25519 + X25519
+│   ├── omemo-doubleratchet/   # Signal-spec Double Ratchet
+│   ├── omemo-x3dh/            # X3DH key agreement
+│   ├── omemo-twomemo/         # OMEMO 2 backend (twomemo.proto)
+│   ├── omemo-stanza/          # XEP-0384 v0.9 stanza encode/parse
+│   ├── omemo-session/         # SQLite-backed persistent storage
+│   ├── omemo-pep/             # XEP-0163 PEP integration (Stage 4)
+│   └── omemo-test-harness/    # cross-language fixture replay (cargo test only)
+├── docs/                      # architecture, pipeline, ADRs, stages
+├── test-vectors/
+│   ├── fixtures/              # committed JSON fixtures (10 of them at Stage 3)
+│   ├── scripts/gen_*.py       # regenerators
+│   └── reference/             # cloned upstream Python repos (gitignored)
+└── TODO.md                    # live task list (mirrors docs/stages.md)
+```
+
+## Test methodology
+
+Every Rust crypto primitive must produce **byte-identical** output to its
+Syndace Python counterpart. The Python implementations are used as
+deterministic oracles: a generator script (`scripts/gen_*.py`) feeds
+deterministic inputs into the Python reference and serialises (input,
+expected output) pairs to `fixtures/<primitive>.json`. Rust replay tests
+load the JSON, run our impl on the same inputs, and `assert_eq!` against
+the recorded output.
+
+Fixtures are committed; contributors without the Python venv can still run
+`cargo test`. See `docs/pipeline.md` for full details and the fixture
+inventory.
+
+## Quickstart
+
+```bash
+git clone https://github.com/.../omemo-rs.git
+cd omemo-rs
+cargo test --workspace
+```
+
+If you want to regenerate fixtures (after upstream Python package bumps):
+
+```bash
+cd test-vectors
+git clone --depth 1 https://github.com/Syndace/python-doubleratchet.git reference/python-doubleratchet
+git clone --depth 1 https://github.com/Syndace/python-x3dh.git           reference/python-x3dh
+git clone --depth 1 https://github.com/Syndace/python-xeddsa.git         reference/python-xeddsa
+git clone --depth 1 https://github.com/Syndace/python-twomemo.git        reference/python-twomemo
+git clone --depth 1 https://github.com/Syndace/python-omemo.git          reference/python-omemo
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install doubleratchet==1.3.0 x3dh==1.3.0 xeddsa==1.2.0 twomemo==2.1.0 'omemo>=2,<3' \
+            cryptography pydantic
+
+for s in scripts/gen_*.py; do python "$s"; done
+git diff fixtures/   # should be empty if upstream hasn't drifted
+```
+
+## License
+
+MIT (see `LICENSE` if present, else fall back to `Cargo.toml` `[workspace.package]`).
+
+The runtime crate graph contains only MIT/Apache/BSD code:
+
+* `curve25519-dalek`, `ed25519-dalek`, `x25519-dalek`, `hkdf`, `hmac`,
+  `sha2`, `aes`, `cbc` — RustCrypto, BSD/MIT/Apache
+* `prost` — Apache-2.0
+* `quick-xml` — MIT
+* `rusqlite` (bundled SQLite) — MIT / public-domain SQLite source
+
+Python reference packages are used **only at fixture-generation time** and
+are not in the runtime crate graph. We deliberately do **not** depend on
+`libsignal` (Rust) or `python-oldmemo`, both of which are AGPL-3.0.
+
+## Documentation
+
+* [`docs/architecture.md`](docs/architecture.md) — top-level design, crate
+  responsibilities, OMEMO 2 algorithm choices.
+* [`docs/pipeline.md`](docs/pipeline.md) — fixture replay infrastructure +
+  per-primitive inventory.
+* [`docs/stages.md`](docs/stages.md) — phase-by-phase development plan
+  with gate criteria.
+* [`docs/decisions.md`](docs/decisions.md) — architectural decision log
+  (ADR-001 .. ADR-006).
+* [`TODO.md`](TODO.md) — live checkbox-style task list.
+
+## Out of scope
+
+* OMEMO 0.3.0 (`oldmemo`/siacs axolotl namespace) — AGPL chain.
+* Hardware-token / smartcard-backed identity keys.
+* Wasm builds (storage layer assumes filesystem + SQLite).
+* Megolm-style group encryption optimisations (OMEMO 2 fanout is fine for
+  bot-sized rooms, which are our target).

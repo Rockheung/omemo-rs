@@ -3,7 +3,9 @@
 //! byte-equal with python-doubleratchet.
 
 use omemo_doubleratchet::aead::HashFunction;
-use omemo_doubleratchet::dh_ratchet::{DhPrivProvider, DiffieHellmanRatchet, FixedDhPrivProvider, Header};
+use omemo_doubleratchet::dh_ratchet::{
+    DhPrivProvider, DiffieHellmanRatchet, FixedDhPrivProvider, Header,
+};
 use omemo_doubleratchet::double_ratchet::{
     build_ad_default, AeadParams, DoubleRatchet, EncryptedMessage,
 };
@@ -27,6 +29,7 @@ struct WireEncrypted {
 
 #[derive(Debug, Deserialize)]
 struct WireMessage {
+    #[allow(dead_code)] // human-readable label, present in JSON only
     label: String,
     plaintext_hex: String,
     encrypted: WireEncrypted,
@@ -141,14 +144,20 @@ fn gate_double_ratchet_round_trip() {
     let want_m1 = from_wire(&c.messages[1].encrypted);
     assert_eq!(m1_ct, want_m1, "M1 ciphertext byte-equal with python");
 
-    let m1_recovered = alice.decrypt_message(&m1_ct, &ad).expect("alice decrypt M1");
+    let m1_recovered = alice
+        .decrypt_message(&m1_ct, &ad)
+        .expect("alice decrypt M1");
     assert_eq!(m1_recovered, m1_pt, "M1 plaintext recovered");
 
     // M2, M3: Alice → Bob (encrypt both before either is delivered).
     let m2_pt = hex_decode(&c.messages[2].plaintext_hex).unwrap();
     let m3_pt = hex_decode(&c.messages[3].plaintext_hex).unwrap();
-    let m2_ct = alice.encrypt_message(&m2_pt, &ad).expect("alice encrypt M2");
-    let m3_ct = alice.encrypt_message(&m3_pt, &ad).expect("alice encrypt M3");
+    let m2_ct = alice
+        .encrypt_message(&m2_pt, &ad)
+        .expect("alice encrypt M2");
+    let m3_ct = alice
+        .encrypt_message(&m3_pt, &ad)
+        .expect("alice encrypt M3");
 
     assert_eq!(
         m2_ct,

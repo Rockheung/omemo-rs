@@ -141,21 +141,23 @@ impl Store {
         if !exists {
             return Ok(0);
         }
-        let v: i64 = self
-            .conn
-            .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |r| r.get(0))?;
+        let v: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |r| r.get(0),
+        )?;
         Ok(v as u32)
     }
 
     fn migrate(&mut self) -> Result<(), SessionStoreError> {
         let v = self.current_version()?;
         if v < 1 {
-            self.conn.execute_batch(SCHEMA_V1_SQL).map_err(|e| {
-                SessionStoreError::Migration {
+            self.conn
+                .execute_batch(SCHEMA_V1_SQL)
+                .map_err(|e| SessionStoreError::Migration {
                     version: 1,
                     detail: e.to_string(),
-                }
-            })?;
+                })?;
         }
         Ok(())
     }
@@ -193,7 +195,12 @@ impl Store {
                 [],
                 |r| {
                     let blob: Vec<u8> = r.get(2)?;
-                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, blob, r.get::<_, i64>(3)?))
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        blob,
+                        r.get::<_, i64>(3)?,
+                    ))
                 },
             )
             .optional()?;

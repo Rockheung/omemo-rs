@@ -62,10 +62,7 @@ pub enum TwomemoError {
 /// `ad_omemo_x3dh || OMEMOMessage(n, pn, dh_pub).SerializeToString()`
 ///
 /// The AEAD then strips the trailing OMEMOMessage off before HMAC-ing.
-pub fn build_associated_data(
-    ad_x3dh: &[u8],
-    h: &DrHeader,
-) -> Vec<u8> {
+pub fn build_associated_data(ad_x3dh: &[u8], h: &DrHeader) -> Vec<u8> {
     let header_msg = OmemoMessage {
         n: h.sending_chain_length as u32,
         pn: h.previous_sending_chain_length as u32,
@@ -109,21 +106,18 @@ fn truncated_hmac(key: &[u8], data: &[u8]) -> [u8; MAC_LEN] {
 /// `associated_data` is what `omemo-doubleratchet::DoubleRatchet` passes
 /// in: it equals `ad_x3dh || OMEMOMessage(header).SerializeToString()`. We
 /// re-split it back into `(ad_x3dh, header_msg)` here.
-pub fn aead_encrypt(
-    associated_data: &[u8],
-    msg_key: &[u8],
-    plaintext: &[u8],
-) -> Vec<u8> {
+pub fn aead_encrypt(associated_data: &[u8], msg_key: &[u8], plaintext: &[u8]) -> Vec<u8> {
     // Split AD: first IDENTITY_KEY_ENCODING_LENGTH * 2 bytes are the X3DH
     // associated data; the rest is the OMEMOMessage header (which we re-
     // parse so we can rebuild the message with the ciphertext).
     let (ad_x3dh, header_bytes) = associated_data.split_at(IDENTITY_KEY_ENCODING_LENGTH * 2);
-    let header = OmemoMessage::decode(header_bytes).expect("DR layer always feeds well-formed OMEMOMessage");
+    let header =
+        OmemoMessage::decode(header_bytes).expect("DR layer always feeds well-formed OMEMOMessage");
 
     let (mut enc_key, mut auth_key, iv) = derive(msg_key);
 
-    let ciphertext = Aes256CbcEnc::new(&enc_key.into(), &iv.into())
-        .encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+    let ciphertext =
+        Aes256CbcEnc::new(&enc_key.into(), &iv.into()).encrypt_padded_vec_mut::<Pkcs7>(plaintext);
 
     let omemo_msg = OmemoMessage {
         n: header.n,
@@ -132,7 +126,9 @@ pub fn aead_encrypt(
         ciphertext: Some(ciphertext),
     };
     let mut omemo_msg_bytes = Vec::with_capacity(omemo_msg.encoded_len());
-    omemo_msg.encode(&mut omemo_msg_bytes).expect("encode in-memory");
+    omemo_msg
+        .encode(&mut omemo_msg_bytes)
+        .expect("encode in-memory");
 
     let mut mac_input = Vec::with_capacity(ad_x3dh.len() + omemo_msg_bytes.len());
     mac_input.extend_from_slice(ad_x3dh);
@@ -177,15 +173,15 @@ pub fn aead_decrypt(
     }
 
     let inner = OmemoMessage::decode(auth_msg.message.as_slice())?;
-    if inner.n != dr_header.n
-        || inner.pn != dr_header.pn
-        || inner.dh_pub != dr_header.dh_pub
-    {
+    if inner.n != dr_header.n || inner.pn != dr_header.pn || inner.dh_pub != dr_header.dh_pub {
         enc_key.zeroize();
         auth_key.zeroize();
         return Err(TwomemoError::HeaderMismatch);
     }
-    let ct = inner.ciphertext.as_deref().ok_or(TwomemoError::MissingCiphertext)?;
+    let ct = inner
+        .ciphertext
+        .as_deref()
+        .ok_or(TwomemoError::MissingCiphertext)?;
 
     let pt = Aes256CbcDec::new(&enc_key.into(), &iv.into())
         .decrypt_padded_vec_mut::<Pkcs7>(ct)
@@ -217,7 +213,7 @@ use std::collections::VecDeque;
 
 use omemo_doubleratchet::aead::HashFunction;
 use omemo_doubleratchet::dh_ratchet::{
-    DiffieHellmanRatchet, DhPrivProvider, FixedDhPrivProvider, Header,
+    DhPrivProvider, DiffieHellmanRatchet, FixedDhPrivProvider, Header,
 };
 use omemo_doubleratchet::kdf_hkdf::{HkdfKdf, HkdfParams};
 use omemo_doubleratchet::kdf_separate_hmacs::{SeparateHmacsKdf, SeparateHmacsParams};
@@ -604,13 +600,14 @@ pub fn build_key_exchange(
     Ok(out)
 }
 
-/// Parse an `OMEMOKeyExchange`, returning `(pk_id, spk_id, ik, ek,
-/// auth_msg_bytes)`. The receiver pairs `(pk_id, spk_id)` with their stored
-/// public keys, runs X3DH passive, and feeds `auth_msg_bytes` to
-/// [`TwomemoSession::decrypt_message`].
-pub fn parse_key_exchange(
-    kex_bytes: &[u8],
-) -> Result<(u32, u32, [u8; 32], [u8; 32], Vec<u8>), TwomemoError> {
+/// `(pk_id, spk_id, ik_pub, ek_pub, auth_msg_bytes)` extracted from a parsed
+/// OMEMOKeyExchange.
+pub type ParsedKeyExchange = (u32, u32, [u8; 32], [u8; 32], Vec<u8>);
+
+/// Parse an `OMEMOKeyExchange`, returning the extracted fields. The receiver
+/// pairs `(pk_id, spk_id)` with their stored public keys, runs X3DH passive,
+/// and feeds `auth_msg_bytes` to [`TwomemoSession::decrypt_message`].
+pub fn parse_key_exchange(kex_bytes: &[u8]) -> Result<ParsedKeyExchange, TwomemoError> {
     let kex = OmemoKeyExchange::decode(kex_bytes)?;
     if kex.ik.len() != 32 || kex.ek.len() != 32 {
         return Err(TwomemoError::HeaderMismatch);
@@ -620,7 +617,9 @@ pub fn parse_key_exchange(
     ik.copy_from_slice(&kex.ik);
     ek.copy_from_slice(&kex.ek);
     let mut auth_bytes = Vec::with_capacity(kex.message.encoded_len());
-    kex.message.encode(&mut auth_bytes).expect("encode in-memory");
+    kex.message
+        .encode(&mut auth_bytes)
+        .expect("encode in-memory");
     Ok((kex.pk_id, kex.spk_id, ik, ek, auth_bytes))
 }
 

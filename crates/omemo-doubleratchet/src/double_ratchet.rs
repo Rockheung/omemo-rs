@@ -95,7 +95,13 @@ impl<R: Kdf, M: Kdf> DoubleRatchet<R, M> {
     ) -> Result<EncryptedMessage, DoubleRatchetError> {
         let (mk, header) = self.dh.next_encryption_key()?;
         let ad = (self.build_ad)(associated_data, &header);
-        let ct = aead_mod::encrypt(self.aead_params.hash, self.aead_params.info, &mk, &ad, plaintext);
+        let ct = aead_mod::encrypt(
+            self.aead_params.hash,
+            self.aead_params.info,
+            &mk,
+            &ad,
+            plaintext,
+        );
         Ok(EncryptedMessage {
             header,
             ciphertext: ct,

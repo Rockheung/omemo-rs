@@ -204,10 +204,7 @@ impl<R: Kdf, M: Kdf> DiffieHellmanRatchet<R, M> {
     /// Restore a ratchet from a snapshot. The caller supplies a fresh priv
     /// provider — production code uses an OS-RNG-backed provider, tests
     /// use [`FixedDhPrivProvider`].
-    pub fn from_snapshot(
-        s: DhRatchetSnapshot,
-        priv_provider: Box<dyn DhPrivProvider>,
-    ) -> Self {
+    pub fn from_snapshot(s: DhRatchetSnapshot, priv_provider: Box<dyn DhPrivProvider>) -> Self {
         Self {
             own_ratchet_priv: s.own_ratchet_priv,
             other_ratchet_pub: s.other_ratchet_pub,

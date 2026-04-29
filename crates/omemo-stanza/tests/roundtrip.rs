@@ -86,7 +86,10 @@ const EMPTY_DEVICE_LIST: &str = "<list xmlns=\"urn:xmpp:omemo:2\"></list>";
 fn roundtrip_encrypted(canonical: &str) {
     let parsed = Encrypted::parse(canonical).expect("parse");
     let emitted = parsed.encode().expect("encode");
-    assert_eq!(emitted, canonical, "encode mismatch\n want: {canonical}\n got:  {emitted}");
+    assert_eq!(
+        emitted, canonical,
+        "encode mismatch\n want: {canonical}\n got:  {emitted}"
+    );
     let reparsed = Encrypted::parse(&emitted).expect("reparse");
     assert_eq!(parsed, reparsed, "model not stable across round-trip");
 }
@@ -187,7 +190,8 @@ fn parse_accepts_xml_decl_and_whitespace() {
 
 #[test]
 fn missing_sid_is_error() {
-    let bad = "<encrypted xmlns=\"urn:xmpp:omemo:2\"><header><keys jid=\"x\"/></header></encrypted>";
+    let bad =
+        "<encrypted xmlns=\"urn:xmpp:omemo:2\"><header><keys jid=\"x\"/></header></encrypted>";
     assert!(Encrypted::parse(bad).is_err());
 }
 

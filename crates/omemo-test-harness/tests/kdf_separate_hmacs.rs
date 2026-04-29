@@ -43,7 +43,8 @@ fn replay_kdf_separate_hmacs_fixtures() {
         let expected = hex_decode(&c.expected_hex).unwrap();
         let got = derive(&c.hash, &key, &data, c.out_len);
         assert_eq!(
-            got, expected,
+            got,
+            expected,
             "case {i} ({}): mismatch\n  expected: {}\n  got:      {}",
             c.label,
             hex::encode(&expected),

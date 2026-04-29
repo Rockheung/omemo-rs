@@ -38,7 +38,11 @@ impl SeparateHmacsParams for OmemoMsg {
 }
 
 fn run_case(case: &Case) {
-    assert_eq!(case.hash, "sha256", "case {}: only sha256 covered", case.label);
+    assert_eq!(
+        case.hash, "sha256",
+        "case {}: only sha256 covered",
+        case.label
+    );
     let initial = hex_decode(&case.key_hex).unwrap();
     match case.kind.as_str() {
         "hkdf-root" => {
@@ -49,11 +53,23 @@ fn run_case(case: &Case) {
                 case.label
             );
             let mut chain: KdfChain<HkdfKdf<OmemoRoot>> = KdfChain::new(initial);
-            replay_steps(&case.label, &mut chain, &case.steps, |c| c.key().to_vec(), |c| c.length());
+            replay_steps(
+                &case.label,
+                &mut chain,
+                &case.steps,
+                |c| c.key().to_vec(),
+                |c| c.length(),
+            );
         }
         "separate-hmacs-msg" => {
             let mut chain: KdfChain<SeparateHmacsKdf<OmemoMsg>> = KdfChain::new(initial);
-            replay_steps(&case.label, &mut chain, &case.steps, |c| c.key().to_vec(), |c| c.length());
+            replay_steps(
+                &case.label,
+                &mut chain,
+                &case.steps,
+                |c| c.key().to_vec(),
+                |c| c.length(),
+            );
         }
         other => panic!("unknown kind: {other}"),
     }
@@ -74,7 +90,8 @@ fn replay_steps<C>(
         let want_key = hex_decode(&s.key_after_hex).unwrap();
         let got = chain.step(&data, s.length);
         assert_eq!(
-            got, want_out,
+            got,
+            want_out,
             "case {label} step {i}: out mismatch\n  want: {}\n  got:  {}",
             hex::encode(&want_out),
             hex::encode(&got)

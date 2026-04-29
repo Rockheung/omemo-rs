@@ -100,7 +100,9 @@ pub fn curve25519_pub_to_ed25519_pub(
 ) -> [u8; ED_25519_PUB_SIZE] {
     let m = MontgomeryPoint(*curve_pub);
     // to_edwards takes a sign byte (0 or 1)
-    let edwards = m.to_edwards(set_sign_bit as u8).expect("non-canonical Mont u");
+    let edwards = m
+        .to_edwards(set_sign_bit as u8)
+        .expect("non-canonical Mont u");
     let mut compressed = edwards.compress().to_bytes();
     // Force sign bit per request (defensive — to_edwards already does this)
     if set_sign_bit {

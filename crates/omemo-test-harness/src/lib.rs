@@ -30,8 +30,7 @@ pub fn fixtures_dir() -> PathBuf {
 
 pub fn load_fixture<C: for<'de> Deserialize<'de>>(name: &str) -> Result<Fixture<C>> {
     let path = fixtures_dir().join(name);
-    let bytes =
-        std::fs::read(&path).with_context(|| format!("read fixture {}", path.display()))?;
+    let bytes = std::fs::read(&path).with_context(|| format!("read fixture {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse fixture {}", path.display()))
 }
 

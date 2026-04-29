@@ -2,12 +2,11 @@
 //! 3 follow-up messages, byte-equal with python-twomemo at the protobuf
 //! wire-format level.
 
-use omemo_twomemo::{
-    aead_decrypt, aead_encrypt, build_associated_data, build_key_exchange,
-    fixed_priv_provider, parse_key_exchange, OmemoAuthenticatedMessage, OmemoMessage,
-    TwomemoSession,
-};
 use omemo_test_harness::{fixtures_dir, hex_decode};
+use omemo_twomemo::{
+    aead_decrypt, aead_encrypt, build_associated_data, build_key_exchange, fixed_priv_provider,
+    parse_key_exchange, OmemoAuthenticatedMessage, OmemoMessage, TwomemoSession,
+};
 use prost::Message as _;
 use serde::Deserialize;
 
@@ -72,12 +71,8 @@ fn gate_twomemo_kex_plus_three() {
     let bob_spk_pub_local = omemo_xeddsa::priv_to_curve25519_pub(&bob_spk_priv);
 
     // ---- Alice (active).
-    let alice_dr_privs: Vec<[u8; 32]> = c
-        .alice
-        .dr_priv_queue_hex
-        .iter()
-        .map(|h| hex32(h))
-        .collect();
+    let alice_dr_privs: Vec<[u8; 32]> =
+        c.alice.dr_priv_queue_hex.iter().map(|h| hex32(h)).collect();
     let mut alice = TwomemoSession::create_active(
         hex_decode(&c.associated_data_hex).unwrap(),
         hex_decode(&c.shared_secret_hex).unwrap(),
@@ -92,8 +87,8 @@ fn gate_twomemo_kex_plus_three() {
     // Wrap into KEX. Alice's IK Ed25519 pub is recoverable from the seed.
     let alice_ik_pub_ed = omemo_xeddsa::seed_to_ed25519_pub(&hex32(&c.alice.ik_seed_hex));
     let alice_ek_pub = hex32(&c.alice.ek_pub_hex);
-    let kex_bytes =
-        build_key_exchange(c.pk_id, c.spk_id, alice_ik_pub_ed, alice_ek_pub, &auth_m0).expect("kex");
+    let kex_bytes = build_key_exchange(c.pk_id, c.spk_id, alice_ik_pub_ed, alice_ek_pub, &auth_m0)
+        .expect("kex");
 
     // Byte-equal with python.
     let want_kex = hex_decode(&c.wire.kex0_hex).unwrap();
@@ -116,7 +111,8 @@ fn gate_twomemo_kex_plus_three() {
     {
         let want = hex_decode(want_hex).unwrap();
         assert_eq!(
-            got, &want,
+            got,
+            &want,
             "follow-up M{} bytes byte-equal with python",
             i + 1
         );
@@ -134,8 +130,8 @@ fn gate_twomemo_kex_plus_three() {
     // Bob initiates passive session: derives DR root from shared secret
     // (same as alice's), uses his SPK priv as own_ratchet_priv, and uses
     // alice's first ratchet pub from the inner OMEMOMessage (auth_msg).
-    let auth = OmemoAuthenticatedMessage::decode(auth_m0_recovered.as_slice())
-        .expect("auth decode");
+    let auth =
+        OmemoAuthenticatedMessage::decode(auth_m0_recovered.as_slice()).expect("auth decode");
     let inner = OmemoMessage::decode(auth.message.as_slice()).expect("inner decode");
     let alice_first_dr_pub = {
         let mut p = [0u8; 32];
@@ -143,12 +139,7 @@ fn gate_twomemo_kex_plus_three() {
         p
     };
 
-    let bob_dr_privs: Vec<[u8; 32]> = c
-        .bob
-        .dr_priv_queue_hex
-        .iter()
-        .map(|h| hex32(h))
-        .collect();
+    let bob_dr_privs: Vec<[u8; 32]> = c.bob.dr_priv_queue_hex.iter().map(|h| hex32(h)).collect();
     let mut bob = TwomemoSession::create_passive(
         hex_decode(&c.associated_data_hex).unwrap(),
         hex_decode(&c.shared_secret_hex).unwrap(),
@@ -163,11 +154,11 @@ fn gate_twomemo_kex_plus_three() {
         .expect("bob decrypt M0");
     assert_eq!(m0_pt, pt0, "M0 plaintext recovered");
 
-    for i in 0..3 {
+    for (i, follow_up) in follow_ups.iter().enumerate() {
         let want_pt = hex_decode(&c.plaintexts_hex[i + 1]).unwrap();
         let got = bob
-            .decrypt_message(&follow_ups[i])
-            .expect(&format!("bob decrypt follow-up M{}", i + 1));
+            .decrypt_message(follow_up)
+            .unwrap_or_else(|_| panic!("bob decrypt follow-up M{}", i + 1));
         assert_eq!(got, want_pt, "follow-up M{} plaintext recovered", i + 1);
     }
 
@@ -198,12 +189,8 @@ fn session_snapshot_round_trip() {
     let bob_spk_priv = hex32(&c.bob.spk_priv_hex);
     let bob_spk_pub = omemo_xeddsa::priv_to_curve25519_pub(&bob_spk_priv);
 
-    let alice_dr_privs: Vec<[u8; 32]> = c
-        .alice
-        .dr_priv_queue_hex
-        .iter()
-        .map(|h| hex32(h))
-        .collect();
+    let alice_dr_privs: Vec<[u8; 32]> =
+        c.alice.dr_priv_queue_hex.iter().map(|h| hex32(h)).collect();
     let mut alice = TwomemoSession::create_active(
         hex_decode(&c.associated_data_hex).unwrap(),
         hex_decode(&c.shared_secret_hex).unwrap(),
@@ -223,10 +210,8 @@ fn session_snapshot_round_trip() {
     // Restore. The remaining priv queue starts from where the original
     // session left off.
     let remaining_privs = alice_dr_privs[1..].to_vec();
-    let mut restored = TwomemoSession::from_snapshot(
-        decoded,
-        fixed_priv_provider(remaining_privs.clone()),
-    );
+    let mut restored =
+        TwomemoSession::from_snapshot(decoded, fixed_priv_provider(remaining_privs.clone()));
 
     // Continuation: encrypting M1 from the restored session must produce
     // the same wire bytes as encrypting M1 from the original session.

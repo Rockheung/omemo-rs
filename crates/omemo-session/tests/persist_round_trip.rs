@@ -22,12 +22,10 @@ use std::path::PathBuf;
 
 use omemo_doubleratchet::dh_ratchet::FixedDhPrivProvider;
 use omemo_session::{Store, StoredOpk, StoredSpk};
-use omemo_twomemo::{
-    parse_key_exchange, TwomemoSession, TwomemoSessionSnapshot,
-};
+use omemo_twomemo::{parse_key_exchange, TwomemoSession, TwomemoSessionSnapshot};
 use omemo_x3dh::{
-    get_shared_secret_active, get_shared_secret_passive, Bundle as X3dhBundle, Header as X3dhHeader,
-    IdentityKeyPair, PreKeyPair, SignedPreKeyPair, X3dhState,
+    get_shared_secret_active, get_shared_secret_passive, Bundle as X3dhBundle,
+    Header as X3dhHeader, IdentityKeyPair, PreKeyPair, SignedPreKeyPair, X3dhState,
 };
 
 fn det(label: &str, length: usize) -> Vec<u8> {
@@ -38,7 +36,7 @@ fn det(label: &str, length: usize) -> Vec<u8> {
         let mut h = Sha512::new();
         h.update(b"stage3-fixture");
         h.update(label.as_bytes());
-        h.update(&counter.to_be_bytes());
+        h.update(counter.to_be_bytes());
         out.extend_from_slice(&h.finalize());
         counter += 1;
     }
@@ -159,11 +157,10 @@ fn gate_persist_and_continue_session() {
         get_shared_secret_passive(&bob_state, &alice_x3dh_header, b"", true).expect("passive");
 
     // Mark Bob's OPK consumed.
-    bob_store
-        .consume_opk(OPK_ID)
-        .expect("consume_opk")
-        .then(|| ())
-        .expect("OPK was consumed");
+    assert!(
+        bob_store.consume_opk(OPK_ID).expect("consume_opk"),
+        "OPK was consumed"
+    );
 
     assert_eq!(alice_x3dh.shared_secret, bob_x3dh.shared_secret);
 
@@ -223,16 +220,25 @@ fn gate_persist_and_continue_session() {
     let bob_store = Store::open(&bob_db).expect("reopen bob");
 
     // Identity + bundle facts persist.
-    let alice_id = alice_store.get_identity().expect("alice id").expect("present");
+    let alice_id = alice_store
+        .get_identity()
+        .expect("alice id")
+        .expect("present");
     assert_eq!(alice_id.bare_jid, ALICE_JID);
     assert_eq!(alice_id.device_id, ALICE_DEVICE_ID);
 
-    let alice_spk = alice_store.current_spk().expect("alice spk").expect("present");
+    let alice_spk = alice_store
+        .current_spk()
+        .expect("alice spk")
+        .expect("present");
     assert_eq!(alice_spk.id, SPK_ID);
 
     // OPK consumed-once flag persists.
     let bob_opk = bob_store.get_opk(OPK_ID).expect("opk").expect("present");
-    assert!(bob_opk.consumed, "OPK consumed flag persisted across restart");
+    assert!(
+        bob_opk.consumed,
+        "OPK consumed flag persisted across restart"
+    );
 
     // ============ Phase 4: restore sessions + send M2 ====================
     // The DH priv queues for the restored sessions hand the *remaining*
@@ -255,7 +261,9 @@ fn gate_persist_and_continue_session() {
         Box::new(FixedDhPrivProvider::new(bob_dr_privs[1..].to_vec())),
     );
 
-    let m2 = alice.encrypt_message(b"after restart").expect("M2 after restart");
+    let m2 = alice
+        .encrypt_message(b"after restart")
+        .expect("M2 after restart");
     let pt2 = bob.decrypt_message(&m2).expect("bob M2 after restart");
     assert_eq!(
         pt2, b"after restart",
@@ -268,10 +276,10 @@ fn gate_persist_and_continue_session() {
 /// be told.
 fn peek_dh_pub(auth_msg_bytes: &[u8]) -> [u8; 32] {
     use prost::Message as _;
-    let kex_or_auth = omemo_twomemo::OmemoAuthenticatedMessage::decode(auth_msg_bytes)
-        .expect("peek auth");
-    let inner = omemo_twomemo::OmemoMessage::decode(kex_or_auth.message.as_slice())
-        .expect("peek inner");
+    let kex_or_auth =
+        omemo_twomemo::OmemoAuthenticatedMessage::decode(auth_msg_bytes).expect("peek auth");
+    let inner =
+        omemo_twomemo::OmemoMessage::decode(kex_or_auth.message.as_slice()).expect("peek inner");
     let mut p = [0u8; 32];
     p.copy_from_slice(&inner.dh_pub);
     p

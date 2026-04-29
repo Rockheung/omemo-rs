@@ -128,10 +128,12 @@ impl<K: Kdf> SymmetricKeyRatchet<K> {
     }
 
     pub fn next_decryption_key(&mut self) -> Result<Vec<u8>, SymmetricKeyRatchetError> {
-        let chain = self
-            .receiving_chain
-            .as_mut()
-            .ok_or(SymmetricKeyRatchetError::ChainNotAvailable(Chain::Receiving))?;
+        let chain =
+            self.receiving_chain
+                .as_mut()
+                .ok_or(SymmetricKeyRatchetError::ChainNotAvailable(
+                    Chain::Receiving,
+                ))?;
         Ok(chain.step(&self.constant, 32))
     }
 }

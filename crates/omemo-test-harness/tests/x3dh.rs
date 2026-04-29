@@ -5,11 +5,11 @@
 //! on Bob's side, asserting both produce the same shared secret + AD that
 //! python-x3dh produced.
 
+use omemo_test_harness::{hex_decode, load_fixture};
 use omemo_x3dh::{
     get_shared_secret_active, get_shared_secret_passive, Bundle, Header, IdentityKeyPair,
     PreKeyPair, SignedPreKeyPair, X3dhState,
 };
-use omemo_test_harness::{hex_decode, load_fixture};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -74,14 +74,17 @@ fn hex64(s: &str) -> [u8; 64] {
     out
 }
 
-fn build_state(ik_seed_hex: &str, spk_priv_hex: &str, spk_nonce_hex: &str, opk_privs_hex: &[String]) -> X3dhState {
+fn build_state(
+    ik_seed_hex: &str,
+    spk_priv_hex: &str,
+    spk_nonce_hex: &str,
+    opk_privs_hex: &[String],
+) -> X3dhState {
     let ik = IdentityKeyPair::Seed(hex32(ik_seed_hex));
     let spk = SignedPreKeyPair::create(&ik, hex32(spk_priv_hex), hex64(spk_nonce_hex), 1234567890);
     let opks = opk_privs_hex
         .iter()
-        .map(|h| PreKeyPair {
-            priv_key: hex32(h),
-        })
+        .map(|h| PreKeyPair { priv_key: hex32(h) })
         .collect();
     X3dhState {
         identity_key: ik,
@@ -92,7 +95,12 @@ fn build_state(ik_seed_hex: &str, spk_priv_hex: &str, spk_nonce_hex: &str, opk_p
 }
 
 fn run_case(c: &Case) {
-    let alice = build_state(&c.alice.ik_seed_hex, &c.alice.spk_priv_hex, &c.alice.spk_nonce_hex, &[]);
+    let alice = build_state(
+        &c.alice.ik_seed_hex,
+        &c.alice.spk_priv_hex,
+        &c.alice.spk_nonce_hex,
+        &[],
+    );
     let bob = build_state(
         &c.bob.ik_seed_hex,
         &c.bob.spk_priv_hex,
@@ -106,13 +114,7 @@ fn run_case(c: &Case) {
     // sort by OPK pub hex).
     let mut opks_sorted = bob_bundle_actual.pre_keys.clone();
     opks_sorted.sort_by_key(|p| hex::encode(p));
-    let want_opks: Vec<[u8; 32]> = c
-        .bob
-        .bundle
-        .opks_pub_hex
-        .iter()
-        .map(|h| hex32(h))
-        .collect();
+    let want_opks: Vec<[u8; 32]> = c.bob.bundle.opks_pub_hex.iter().map(|h| hex32(h)).collect();
     assert_eq!(opks_sorted, want_opks, "case {}: OPK set mismatch", c.label);
     assert_eq!(
         bob_bundle_actual.identity_key,
@@ -153,19 +155,49 @@ fn run_case(c: &Case) {
         pre_keys: opks_sorted,
     };
 
-    let (active_out, header) =
-        get_shared_secret_active(&alice, &bundle, &appendix, ek, chosen_opk, c.require_pre_key)
-            .expect("active");
+    let (active_out, header) = get_shared_secret_active(
+        &alice,
+        &bundle,
+        &appendix,
+        ek,
+        chosen_opk,
+        c.require_pre_key,
+    )
+    .expect("active");
 
     let want_ss = hex_decode(&c.shared_secret_hex).unwrap();
     let want_ad = hex_decode(&c.associated_data_hex).unwrap();
-    assert_eq!(active_out.shared_secret.to_vec(), want_ss, "case {}: active SS mismatch", c.label);
-    assert_eq!(active_out.associated_data, want_ad, "case {}: active AD mismatch", c.label);
+    assert_eq!(
+        active_out.shared_secret.to_vec(),
+        want_ss,
+        "case {}: active SS mismatch",
+        c.label
+    );
+    assert_eq!(
+        active_out.associated_data, want_ad,
+        "case {}: active AD mismatch",
+        c.label
+    );
 
     // Verify header matches.
-    assert_eq!(header.identity_key, hex32(&c.header.ik_hex), "case {}: header.ik", c.label);
-    assert_eq!(header.ephemeral_key, hex32(&c.header.ek_hex), "case {}: header.ek", c.label);
-    assert_eq!(header.signed_pre_key, hex32(&c.header.spk_hex), "case {}: header.spk", c.label);
+    assert_eq!(
+        header.identity_key,
+        hex32(&c.header.ik_hex),
+        "case {}: header.ik",
+        c.label
+    );
+    assert_eq!(
+        header.ephemeral_key,
+        hex32(&c.header.ek_hex),
+        "case {}: header.ek",
+        c.label
+    );
+    assert_eq!(
+        header.signed_pre_key,
+        hex32(&c.header.spk_hex),
+        "case {}: header.spk",
+        c.label
+    );
     match (&header.pre_key, &c.header.opk_hex) {
         (Some(p), Some(h)) => assert_eq!(*p, hex32(h), "case {}: header.opk", c.label),
         (None, None) => {}

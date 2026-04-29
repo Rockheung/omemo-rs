@@ -39,7 +39,8 @@ fn replay_aead_aes_hmac_fixtures() {
 
         let got = encrypt(hash, &info, &key, &ad, &pt);
         assert_eq!(
-            got, expected,
+            got,
+            expected,
             "case {i} ({}): encrypt mismatch\n  expected: {}\n  got:      {}",
             c.label,
             hex::encode(&expected),
