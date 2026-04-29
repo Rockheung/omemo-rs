@@ -1,0 +1,10 @@
+[package]
+name = "omemo-stanza"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "TBD — omemo-stanza"
+
+[dependencies]
+thiserror = { workspace = true }

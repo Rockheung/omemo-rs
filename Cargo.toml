@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/omemo-xeddsa",
+    "crates/omemo-doubleratchet",
+    "crates/omemo-x3dh",
+    "crates/omemo-twomemo",
+    "crates/omemo-stanza",
+    "crates/omemo-session",
+    "crates/omemo-pep",
+    "crates/omemo-test-harness",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+authors = ["Rockheung <rockheung@gmail.com>"]
+
+[workspace.dependencies]
+# RustCrypto primitives
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "digest", "precomputed-tables"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "rand_core"] }
+x25519-dalek = { version = "2", default-features = false, features = ["alloc", "static_secrets"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+aes = "0.8"
+cbc = "0.1"
+hex = "0.4"
+rand_core = "0.6"
+zeroize = "1"
+
+# Protobuf
+prost = "0.13"
+prost-build = "0.13"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Errors
+thiserror = "1"
+anyhow = "1"
+
+# Test
+proptest = "1"

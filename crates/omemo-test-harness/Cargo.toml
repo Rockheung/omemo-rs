@@ -1,0 +1,20 @@
+[package]
+name = "omemo-test-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Cross-language test vector replay harness. Loads JSON fixtures generated from python-omemo reference impl and replays against Rust crates."
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+anyhow = { workspace = true }
+
+omemo-xeddsa = { path = "../omemo-xeddsa" }
+curve25519-dalek = { workspace = true }
