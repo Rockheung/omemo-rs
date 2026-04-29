@@ -172,7 +172,11 @@ test, all green together.
       cargo fmt --check, clippy `-D warnings`, full workspace test
 - [x] CI: weekly fixture-regen job (cron Mon 06:00 UTC) — installs
       pinned Syndace packages, regenerates fixtures, fails on drift
-- [ ] CI: `cargo deny` for licence check (block AGPL re-introduction)
+- [x] CI: `cargo deny` for licence check — `deny.toml` allow-list mode
+      (MIT, Apache-2.0, BSD, Unicode-3.0), explicit deny on
+      `libsignal-protocol{,-c}` + `openssl{,-sys}`, sources locked to
+      crates.io. New `deny` job in CI via EmbarkStudios action. Verified
+      local pass + AGPL negative test.
 - [ ] Benchmarks (`criterion`) for HKDF, AES-CBC, scalar mul
 - [x] `cargo fmt` + `cargo clippy --all-targets -D warnings` gated in CI —
       `RUSTFLAGS="-D warnings" cargo test --workspace` passes locally
