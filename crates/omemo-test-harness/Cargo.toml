@@ -15,6 +15,10 @@ hkdf = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 anyhow = { workspace = true }
+prost = { workspace = true }
 
 omemo-xeddsa = { path = "../omemo-xeddsa" }
+omemo-doubleratchet = { path = "../omemo-doubleratchet" }
+omemo-x3dh = { path = "../omemo-x3dh" }
+omemo-twomemo = { path = "../omemo-twomemo" }
 curve25519-dalek = { workspace = true }

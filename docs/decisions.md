@@ -7,6 +7,53 @@ them and add the successor below.
 
 ---
 
+## ADR-006 — DH-priv injection via trait, AD encoding via fn pointer
+
+**Date**: 2026-04-29
+**Status**: accepted
+**Stage**: 1.2
+
+### Context
+Two abstract methods in `python-doubleratchet` need a Rust analogue:
+
+1. `DiffieHellmanRatchet._generate_priv` — every ratchet step generates a
+   fresh Curve25519 priv. Tests need byte-equal replay, so we must inject
+   deterministic privs at the same call points the python class uses.
+2. `DoubleRatchet._build_associated_data(ad, header)` — defines how the
+   header is encoded into the AEAD's AD. python-twomemo overrides this to
+   serialise the header as an `OMEMOMessage` protobuf with the AD bytes
+   prepended; python-doubleratchet leaves it abstract.
+
+### Decision
+* Priv generation: `pub trait DhPrivProvider { fn generate_priv(&mut self) -> [u8;32]; fn clone_box(&self) -> Box<dyn DhPrivProvider>; }`. Production
+  uses an OS-RNG impl; tests use `FixedDhPrivProvider` that pops from a
+  pre-staged queue. `clone_box` is required because `DoubleRatchet` does
+  decrypt-on-clone (matches python's `copy.deepcopy` of the DH ratchet
+  before tentative `next_decryption_key`).
+* AD construction: a plain `fn(&[u8], &Header) -> Vec<u8>` field on
+  `DoubleRatchet`. The default `build_ad_default` encodes
+  `ad || ratchet_pub(32) || pn(8 LE) || n(8 LE)`. `omemo-twomemo` will
+  substitute its own protobuf-aware fn at construction time.
+
+### Alternatives considered
+* `Box<dyn FnMut() -> [u8;32]>` for priv generation — works, but the
+  named trait reads better and `clone_box` falls out naturally without
+  needing `dyn-clone`.
+* Trait method for `build_ad` — overkill; the function is stateless and
+  varies per backend (twomemo vs. plain DR), not per instance.
+* `Box<dyn Fn(&[u8], &Header) -> Vec<u8>>` for `build_ad` — pays an alloc
+  + vtable for nothing; the function pointer route compiles to a direct
+  call.
+
+### Consequences
+* DH ratchet and DoubleRatchet are deterministic in tests, opaque to
+  callers in production.
+* The `BuildAdFn = fn(...)` route means we cannot capture environment in
+  the AD builder. If future twomemo work needs that (it shouldn't —
+  protobuf header serialisation is stateless), upgrade to `Box<dyn Fn>`.
+
+---
+
 ## ADR-005 — Restrict XEdDSA fixtures to clamped priv
 
 **Date**: 2026-04-29

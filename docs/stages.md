@@ -4,6 +4,14 @@ This is the master plan, with definition-of-done criteria ("gates") for each
 stage. A stage is not done until its gate test is green. The TODO.md at the
 repo root is the live, checkbox-style derivative of this document.
 
+**Status (2026-04-29)**: Stages 0, 1.1–1.4, 2, 3 complete — the entire
+crypto layer is byte-equal with the Syndace Python stack, the XEP-0384 v0.9
+stanza encoder/decoder round-trips canonically, and SQLite-backed
+identity/SPK/OPK/session persistence survives DB reopen. Remaining stages
+(4–6) need a real XMPP server (Prosody) and external clients
+(Conversations, Dino) and so cannot be self-contained in this repo's
+test suite.
+
 ## Stage 0 — Workspace + Test-Vector Pipeline ✅
 
 **Goal**: Establish the cross-language replay infrastructure before writing
@@ -47,7 +55,7 @@ generator script → JSON fixtures → Rust port → replay test → green.
 **Gate**: 8 cases × 13 primitives = 104 assertions in
 `tests/xeddsa.rs` all pass.
 
-### 1.2 — `omemo-doubleratchet` ⏳
+### 1.2 — `omemo-doubleratchet` ✅
 
 **Scope**: Port of `python-doubleratchet` 1.3.x.
 
@@ -71,7 +79,7 @@ Sub-modules to port (in dependency order):
 one DH ratchet step in the middle, one skipped message, and one
 out-of-order delivery) replays byte-equal across all messages.
 
-### 1.3 — `omemo-x3dh` ⏳
+### 1.3 — `omemo-x3dh` ✅
 
 **Scope**: Port of `python-x3dh` 1.3.x.
 
@@ -86,7 +94,7 @@ Implements X3DH key agreement:
 **Gate**: A full active/passive bundle exchange replays byte-equal,
 including OPK consumption.
 
-### 1.4 — `omemo-twomemo` ⏳
+### 1.4 — `omemo-twomemo` ✅
 
 **Scope**: Port of `python-twomemo` 2.1.x.
 
@@ -102,7 +110,7 @@ message OMEMOKeyExchange       { uint32 pk_id; uint32 spk_id; bytes ik; bytes ek
 **Gate**: An end-to-end "Alice initiates session with Bob, sends 1 KEX +
 3 messages" replays byte-equal at the protobuf wire-format level.
 
-## Stage 2 — `omemo-stanza` (XEP-0384 v0.9)
+## Stage 2 — `omemo-stanza` (XEP-0384 v0.9) ✅
 
 **Scope**: XML stanza encode/parse for the OMEMO 2 wire format.
 
@@ -147,7 +155,7 @@ envelope. We will handle the SCE envelope construction in Stage 4 (where
 it integrates with PEP / tokio-xmpp); Stage 2 only validates the outer
 OMEMO envelope.
 
-## Stage 3 — `omemo-session`
+## Stage 3 — `omemo-session` ✅
 
 **Scope**: SQLite-backed persistent storage. No protobuf, no XML — just
 state.

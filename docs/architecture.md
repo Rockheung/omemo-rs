@@ -76,58 +76,106 @@ omemo-rs/
 
 ## 5. Crate responsibilities
 
-### `omemo-xeddsa`
+### `omemo-xeddsa` ✅
 Curve25519 ↔ Ed25519 conversions, XEdDSA signing/verification, X25519 ECDH.
 A direct port of `python-xeddsa`'s 11 public functions, which are themselves
-CFFI bindings to `libxeddsa` (a libsodium-based C library).
+CFFI bindings to `libxeddsa` (a libsodium-based C library). XEdDSA matches
+the libxeddsa variant, not the Signal spec — see ADR-003.
 
-### `omemo-doubleratchet`
-The Double Ratchet algorithm (Signal Foundation spec) using:
-* HKDF-SHA-256 root chain
-* Separate-HMACs message chain KDF
-* AES-CBC + HMAC-SHA-256 (truncated to 16 bytes) AEAD
-* Curve25519 DH ratchet
-Port of `python-doubleratchet` (Syndace).
+### `omemo-doubleratchet` ✅
+The Double Ratchet algorithm (Signal Foundation spec):
+* `aead` — AES-256-CBC + HMAC AEAD (full HMAC tail; the 16-byte truncation
+  is twomemo's override and lives in `omemo-twomemo`, see ADR-006).
+* `kdf_hkdf` — HKDF wrapper, type-bound info string (e.g.
+  `OmemoRootKdf` = HKDF-SHA-256 with `info = "OMEMO Root Chain"`).
+* `kdf_separate_hmacs` — message-chain KDF; per-byte HMAC concat.
+* `kdf_chain` — generic KDF chain wrapper (key + step counter).
+* `symmetric_key_ratchet` — sending + receiving chains with rotation.
+* `dh_ratchet` — Curve25519 DH ratchet over `x25519-dalek`. Pluggable
+  priv generation (`DhPrivProvider`) for OS-RNG in production / fixed
+  queue in tests.
+* `double_ratchet` — top-level state machine. FIFO of skipped message
+  keys (`MAX_SKIP=1000`), configurable `BuildAdFn`, decrypt-on-clone
+  semantics matching python's `copy.deepcopy` of the DH ratchet (clone
+  runs the tentative step; only commit on AEAD success).
 
-### `omemo-x3dh`
+### `omemo-x3dh` ✅
 Triple-DH key agreement for session initiation (one-time prekey, signed
-prekey, identity key). Port of `python-x3dh`.
+prekey, identity key). Port of `python-x3dh` configured for OMEMO 2:
+`IdentityKeyFormat::Ed25519`, info = `"OMEMO X3DH"`, hash = SHA-256,
+`_encode_public_key` is pass-through. SPK is signed with the raw IK priv
+(not `priv_force_sign(...)`) since the bundle ships the IK in Ed25519
+form — see the `project_spk_sig_format_dependent` memory.
 
-### `omemo-twomemo`
-OMEMO 2 backend: takes `omemo-doubleratchet` and `omemo-x3dh` outputs and
-encodes them per `twomemo.proto` (3 protobuf messages: `OMEMOMessage`,
-`OMEMOAuthenticatedMessage`, `OMEMOKeyExchange`). Port of `python-twomemo`.
+### `omemo-twomemo` ✅
+OMEMO 2 wire-format backend. `prost-build` codegens
+`twomemo.proto` (committed in `test-vectors/twomemo/`) at compile time
+via `protoc-bin-vendored` (no system `protoc` install needed):
+* `aead_encrypt` / `aead_decrypt` — AEAD override. Truncates HMAC to
+  16 bytes, wraps the AES-CBC ciphertext in `OMEMOMessage` (with header
+  fields), HMACs over `(ad_x3dh) || OMEMOMessage_bytes`, returns a
+  serialized `OMEMOAuthenticatedMessage`.
+* `TwomemoSession` — DH ratchet + skipped-keys FIFO + X3DH-derived AD,
+  with `encrypt_message` / `decrypt_message` returning/consuming wire
+  bytes. Mirrors python-twomemo's `DoubleRatchetImpl` semantics.
+* `build_key_exchange` / `parse_key_exchange` — wrap the first
+  `OMEMOAuthenticatedMessage` in an `OMEMOKeyExchange` with `(pk_id,
+  spk_id, ik, ek)` for the receiver to look up by id.
 
-### `omemo-stanza`
-Encodes/parses the XEP-0384 v0.9 stanza tree:
-* `<encrypted xmlns='urn:xmpp:omemo:2'>` envelope
-* `<header sid=...><keys jid=...><key rid=...>` recipient routing
-* `<payload>` element (base64 of SCE envelope)
-* `<bundle xmlns='urn:xmpp:omemo:2'>` for PEP publishing
+### `omemo-stanza` ✅
+Encodes/parses the XEP-0384 v0.9 stanza tree on top of `quick-xml` (MIT):
+* `<encrypted xmlns='urn:xmpp:omemo:2'>` envelope (multi-recipient
+  `<header sid=...><keys jid=...><key rid=... kex=?>` + optional
+  `<payload>` for SCE bytes)
+* `<bundle xmlns='urn:xmpp:omemo:2'>` (`<spk id=>`, `<spks>`, `<ik>`,
+  `<prekeys><pk id=>...</prekeys>`)
+* `<list xmlns='urn:xmpp:omemo:2'>` (`<device id= label=?>`).
 
-### `omemo-session`
-SQLite-backed persistence: own identity key, signed-prekey rotations,
-one-time prekeys (consumed once each), per-device session ratchet state,
-device list per JID.
+Decoder is tolerant (attribute order, XML decl, whitespace, self-closing
+root). Encoder is canonical: `xmlns` first, then attributes in a fixed
+order; `kex="true"` only emitted when set; key material always
+RFC-4648 base64 (no line wrapping). 11 round-trip + tolerance + negative
+tests gate it.
 
-### `omemo-pep`
+### `omemo-session` ✅
+SQLite-backed persistence on top of `rusqlite` (bundled SQLite, no
+system dep). Forward-only migrations under `migrations/0001_init.sql`,
+WAL mode + foreign keys on, `schema_version` table for future bumps. Six
+tables: `identity` (single row, IK seed + JID + device id),
+`signed_prekey`, `prekey` (with `consumed` boolean — `consume_opk()`
+enforces consumed-once), `device_list`, `session` (TwomemoSession state
+as a length-prefixed BLOB), `message_keys_skipped` (schema-only until
+Stage 5+).
+
+Session BLOB format is decided by `omemo-twomemo::TwomemoSessionSnapshot`
+(versioned, deterministic). Session save/load goes through `Store::
+save_session` / `load_session_snapshot`; the priv provider is supplied
+by the caller on restore (production: OS RNG; tests: `FixedDhPrivProvider`).
+
+### `omemo-pep` ⏳
 XEP-0163 PEP integration on top of `tokio-xmpp`: publishes our bundle and
 device list, subscribes to peers' `urn:xmpp:omemo:2:devices` and fetches
 `urn:xmpp:omemo:2:bundles:{deviceId}` on demand.
 
-### `omemo-test-harness`
+### `omemo-test-harness` ✅
 Replays JSON fixtures generated by `test-vectors/scripts/gen_*.py` against
 each Rust crate. Not a published crate — used only by `cargo test`.
+Test inventory at completion of Stage 1 (10 replay tests, see
+`docs/pipeline.md` §10):
+`xeddsa`, `kdf_hkdf`, `aead_aes_hmac`, `kdf_separate_hmacs`, `kdf_chain`,
+`symmetric_key_ratchet`, `dh_ratchet`, `double_ratchet`, `x3dh`, `twomemo`.
 
 ## 6. Cryptographic algorithms (OMEMO 2 normative)
 
 | Layer | Algorithm | Constant / parameter |
 |---|---|---|
 | DH | Curve25519 (X25519) | clamping per RFC 7748 |
-| Identity signature | XEdDSA (libxeddsa-compat) | 64-byte deterministic nonce |
+| Identity signature | XEdDSA (libxeddsa-compat) | 64-byte deterministic nonce (ADR-003) |
+| X3DH KDF | HKDF-SHA-256 | info = `"OMEMO X3DH"`, salt = 0×32, IKM = `0xFF×32 ‖ DH1‖DH2‖DH3‖DH4?` |
 | Root chain KDF | HKDF-SHA-256 | info = `"OMEMO Root Chain"` |
-| Message chain KDF | Separate HMACs over SHA-256 | constant input bytes per branch |
-| AEAD | AES-256-CBC + HMAC-SHA-256 | tag truncated to 16 bytes; info = `"OMEMO Message Key Material"` |
+| Message chain KDF | Separate HMACs over SHA-256 | data = `b"\x02\x01"` (twomemo `MESSAGE_CHAIN_CONSTANT`) |
+| AEAD HKDF | HKDF-SHA-256 | info = `"OMEMO Message Key Material"`, 80-byte split = 32 enc ‖ 32 auth ‖ 16 IV |
+| AEAD encrypt | AES-256-CBC (PKCS#7) + HMAC-SHA-256 | full HMAC tail at the doubleratchet layer; **16-byte truncation** at the twomemo layer (ADR-006) |
 | Stanza encryption | XEP-0420 SCE | inside `<envelope>` element |
 | Padding | none (XEP-0420 SCE) | content + RPad element |
 | Wire encoding | Protocol Buffers (proto2) | `twomemo.proto` (committed copy in test-vectors/twomemo/) |

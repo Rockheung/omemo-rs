@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "TBD — omemo-x3dh"
+description = "X3DH key agreement. Port of python-x3dh."
 
 [dependencies]
+hkdf = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+omemo-xeddsa = { path = "../omemo-xeddsa" }

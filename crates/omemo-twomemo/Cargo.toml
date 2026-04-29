@@ -4,7 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "TBD — omemo-twomemo"
+description = "OMEMO 2 (twomemo) backend: protobuf wire format + 16-byte HMAC truncation."
 
 [dependencies]
+prost = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true, features = ["alloc"] }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+omemo-doubleratchet = { path = "../omemo-doubleratchet" }
+omemo-x3dh = { path = "../omemo-x3dh" }
+
+[build-dependencies]
+prost-build = { workspace = true }
+protoc-bin-vendored = "3"

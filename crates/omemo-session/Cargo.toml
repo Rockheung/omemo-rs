@@ -4,7 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "TBD — omemo-session"
+description = "SQLite-backed persistence for OMEMO 2 identities, bundles, sessions, and device lists."
 
 [dependencies]
+rusqlite = { workspace = true }
 thiserror = { workspace = true }
+
+omemo-twomemo = { path = "../omemo-twomemo" }
+omemo-x3dh = { path = "../omemo-x3dh" }
+omemo-doubleratchet = { path = "../omemo-doubleratchet" }
+
+[dev-dependencies]
+omemo-xeddsa = { path = "../omemo-xeddsa" }
+sha2 = { workspace = true }
+prost = { workspace = true }

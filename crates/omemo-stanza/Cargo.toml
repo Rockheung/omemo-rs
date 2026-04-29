@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "TBD — omemo-stanza"
+description = "XEP-0384 v0.9 stanza encode/parse for OMEMO 2."
 
 [dependencies]
+quick-xml = { workspace = true }
+base64 = { workspace = true }
 thiserror = { workspace = true }

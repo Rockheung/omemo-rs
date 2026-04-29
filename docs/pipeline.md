@@ -187,3 +187,32 @@ Not yet wired. When set up (probably GitHub Actions):
   required).
 * job 2: regenerate all fixtures from a frozen `requirements.txt`, then
   `git diff --exit-code test-vectors/fixtures/` to catch upstream drift.
+
+## 10. Fixture inventory (Stage 1 complete)
+
+10 generators / 10 replay tests. All cases are byte-equal across the Rust
+and Python paths; `cargo test --workspace` is green.
+
+| Fixture | Generator | Replay test | Cases | Validates |
+|---|---|---|---|---|
+| `kdf_hkdf.json` | `gen_kdf_hkdf.py` | `tests/kdf_hkdf.rs` | 16 | HKDF-SHA-256/512 wrapper |
+| `xeddsa.json` | `gen_xeddsa.py` | `tests/xeddsa.rs` | 8 × 13 | XEdDSA + Curve↔Ed conversions + X25519 (104 assertions) |
+| `aead_aes_hmac.json` | `gen_aead_aes_hmac.py` | `tests/aead_aes_hmac.rs` | 20 | AES-256-CBC + HMAC AEAD (base, full HMAC) + 2 tamper tests |
+| `kdf_separate_hmacs.json` | `gen_kdf_separate_hmacs.py` | `tests/kdf_separate_hmacs.rs` | 17 | per-byte HMAC concat KDF |
+| `kdf_chain.json` | `gen_kdf_chain.py` | `tests/kdf_chain.rs` | 6 | KDF chain (HKDF root + msg chain), multi-step |
+| `symmetric_key_ratchet.json` | `gen_symmetric_key_ratchet.py` | `tests/symmetric_key_ratchet.rs` | 3 / 19 ops | sending+receiving chains, send-chain rotation |
+| `dh_ratchet.json` | `gen_dh_ratchet.py` | `tests/dh_ratchet.rs` | 1 / 10 ops | Alice ↔ Bob with mid-stream DH ratchet step |
+| `double_ratchet.json` | `gen_double_ratchet.py` | `tests/double_ratchet.rs` | 1 / 4 messages | **Stage 1.2 gate** — 4-msg round-trip with DH step + skip + OOO |
+| `x3dh.json` | `gen_x3dh.py` | `tests/x3dh.rs` | 4 | **Stage 1.3 gate** — bundle + active/passive SS byte-equal |
+| `twomemo.json` | `gen_twomemo.py` | `tests/twomemo.rs` | 1 KEX + 3 msgs | **Stage 1.4 gate** — protobuf wire format byte-equal |
+
+Determinism notes:
+* `python-x3dh` uses `secrets.token_bytes` for the active ephemeral and
+  `secrets.choice` for OPK selection. Generators monkey-patch both during
+  the run; the Rust API takes those values as explicit arguments instead.
+* `python-doubleratchet`'s `_generate_priv` is overridden in the gen
+  scripts to pull from a per-actor deterministic queue. The Rust API
+  exposes `DhPrivProvider` with a `FixedDhPrivProvider` test impl.
+* `python-x3dh.__generate_spk` uses a random XEdDSA nonce; we record the
+  nonce in the fixture and pass it to `SignedPreKeyPair::create` on the
+  Rust side.

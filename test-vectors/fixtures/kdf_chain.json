@@ -1,0 +1,289 @@
+{
+  "source": "python-doubleratchet 1.3.0 / doubleratchet.kdf_chain",
+  "algorithm": "KDFChain",
+  "note": "step(data, length) \u2192 derive(key.len()+length) \u2192 first key.len() bytes replace the key, last length bytes are returned",
+  "cases": [
+    {
+      "label": "root-c9775904",
+      "kind": "hkdf-root",
+      "info_hex": "4f4d454d4f20526f6f7420436861696e",
+      "hash": "sha256",
+      "key_hex": "d1ef12f34ce242d02ca7bfa97f43b6c325b6f4db066b6fb2c9f350dba4da56a2",
+      "steps": [
+        {
+          "data_hex": "746383b3bd1e989c5103fa983ccb186778ded542508fb1998a043cd9bdf79c16",
+          "length": 32,
+          "out_hex": "cacdd217d0230c110a3ed434c94a373141e27fcce35c9ca09606cac9664f71ea",
+          "key_after_hex": "9cef08cf03f33e24e659696e8b3c0312544881dd2f86e0045f42033642ba8155",
+          "length_after": 1
+        },
+        {
+          "data_hex": "f51974dddecd7ad451ee383b5d939cbc9cd50a40cba95b83366ed650cf176a12",
+          "length": 32,
+          "out_hex": "a692180d1721b10656e817af16595f47e8715884de89ed7021dfb7d1276110e3",
+          "key_after_hex": "19565394a8faa3c0cb437844c38e2a6dcc5aed9906c51e4ed57ab1696d8f8d62",
+          "length_after": 2
+        },
+        {
+          "data_hex": "0478c96813bc360025e39fa3dd9a79afffa57c8ba0599a1f9c6a2101de3972c1",
+          "length": 32,
+          "out_hex": "e22186aae9e417dca5da381ec9524b18506dee96e17e881f56ef369b7426ea93",
+          "key_after_hex": "76fb2397237b3da1a8a152d01e87ba09d320319563c841bbff79cf288ffbf3c2",
+          "length_after": 3
+        },
+        {
+          "data_hex": "7cb86e28e936711d53877d2393028fb85221310a1a10ad036066771a99a58d1c",
+          "length": 32,
+          "out_hex": "eba5064a665b443b4f6ac166d7ab9a77b72aaf8f34bdd0402f48381437320a3f",
+          "key_after_hex": "95e1bbdacdb6b0ea7f7abe49756fc96ed314a43007203fcb58d95453a3b0bcad",
+          "length_after": 4
+        },
+        {
+          "data_hex": "4e28bfd9b691985deb031a68f6a7f1f937efcbabba0ce7e2911fa01f3913a630",
+          "length": 32,
+          "out_hex": "c00bd09c99e2b1f6464fa6a181fd941e23dd5f185a8cbc5ebfe81a80b1b26fd8",
+          "key_after_hex": "fc91c5f8e4d2590c22715be9356a1f4475870c7ef10a55fcdfd95f5bd41dafb0",
+          "length_after": 5
+        }
+      ]
+    },
+    {
+      "label": "root-86594a69",
+      "kind": "hkdf-root",
+      "info_hex": "4f4d454d4f20526f6f7420436861696e",
+      "hash": "sha256",
+      "key_hex": "c721b6f3ced74eac0586f9d3c90a47e6d90abb76a0791b25a87f94f3c54c46db",
+      "steps": [
+        {
+          "data_hex": "f4e6ad6a7281d7ea54df241df6cd9439dc9ec77fd34e2c9c473b90a98a8e65dc",
+          "length": 32,
+          "out_hex": "ad7c53f523a7236169300fcce89f13ef52b82e375e5a0c00c9181b8e9262c558",
+          "key_after_hex": "c848ca5aa3086c8ac9586090336b1e9b7b2be07cccd2ee6d92337534bf9bd6e2",
+          "length_after": 1
+        },
+        {
+          "data_hex": "520ccfcc3a722cd0b5fceff91e5529acd1310c305b48e73fe758c92a2915e655",
+          "length": 32,
+          "out_hex": "6ae9106c047312696aeac9d8730c37e7ea4e2865f751661c6c3be711eca87489",
+          "key_after_hex": "d4ab12ea81de575ebed1bad15397c398dd58f8a73178958bb6db8386852522f4",
+          "length_after": 2
+        },
+        {
+          "data_hex": "dd22a1b5d283cffca481554effe2baa58cb262ef5e3fada75100a690c437e436",
+          "length": 32,
+          "out_hex": "89decfcbd21635ba9175e22dab7a27256eef57ddfc9bb5dc93b3f060dcb40972",
+          "key_after_hex": "248019cff2672e8974c457bbc1b44c9e9c2d34f328a3be6cd093518f009fd607",
+          "length_after": 3
+        },
+        {
+          "data_hex": "97014ae1b2e84e97b672f8c377bcdaca529963d3f372de49d898b3ba8bccdcd4",
+          "length": 32,
+          "out_hex": "0e01e38fc85e8921abe1ebfd06874aac11948bf990fbda30fc2c49a594a264e1",
+          "key_after_hex": "4179e60441bc6831e91fdfc528756452148a90d1ce4e4c120d90aa4876eed388",
+          "length_after": 4
+        },
+        {
+          "data_hex": "74a5f6853f543371fa46c4f02edf6071c1f8c41e48e18f87a33bf39f0e633521",
+          "length": 32,
+          "out_hex": "d778630c09dc4ee1678064c824dfbfe49abe1a839d40071f038ba3444fee74be",
+          "key_after_hex": "0b4f5716b6cdf12bf254c0b3fdbaf54df24305875d60e7e6b3c37ab138c4ae10",
+          "length_after": 5
+        }
+      ]
+    },
+    {
+      "label": "root-f9acbf12",
+      "kind": "hkdf-root",
+      "info_hex": "4f4d454d4f20526f6f7420436861696e",
+      "hash": "sha256",
+      "key_hex": "0004453d1b9093f668327d82918d408984cdfed4bd147b6582a5a1723bffd443",
+      "steps": [
+        {
+          "data_hex": "3d1c93b02b1c59234b40ef0ba4ca3160c0abd27dd47f770971c79e62d1850ee4",
+          "length": 32,
+          "out_hex": "243f321d38b541e23fafe43c32181eca7387780163f04e8875271c974daefb6a",
+          "key_after_hex": "f8e7564228f5bb1b30aa1ff015c31022724656bb25990c423b45924532f2bf41",
+          "length_after": 1
+        },
+        {
+          "data_hex": "df460704f622218d136e606299a30f3065f9353e11b9d4075e740f1d3b2cb093",
+          "length": 32,
+          "out_hex": "428b1cebb3ad5b593713618f3daa7e992ec86c03d7ecb40b6519ca9d940dfe76",
+          "key_after_hex": "3c38112919d676c5774ebdb9eff4cfb1e2fe9a72aa57bc0c8daf04be7cc1cf23",
+          "length_after": 2
+        },
+        {
+          "data_hex": "b3f8a905ffe853ef4c13aee95b4c473b3243cf22cced3f983e7a60c6d0406d37",
+          "length": 32,
+          "out_hex": "dcce78ff6a69a4a40d85f8248d4ab066998ae19e434fa15d50bd13184974d4fa",
+          "key_after_hex": "20e2acfb3dbba4d780e31c73fe91a30d250e280ab8f186f845e9d430df8641a2",
+          "length_after": 3
+        },
+        {
+          "data_hex": "77f62da61a5e0250923dd9f96a3eb3d8f2f8cede2ec6d6c59d004b1894e993fc",
+          "length": 32,
+          "out_hex": "1ba2171313d917f7048d5e4bd18af73af45c95b75aed008379f50ef758e00793",
+          "key_after_hex": "f0c8e350daa2be03e2b8dc8403ef8fa7767a16046584d6717cf29c88f4f46779",
+          "length_after": 4
+        },
+        {
+          "data_hex": "904f30a65d87f2a7fd131636d4f8b093f2a6b4abd749fcacfffaa25d15abf1a9",
+          "length": 32,
+          "out_hex": "07ed9f85c7d028e371d8a721a7d2e1b7c32f60b1ca3a3a7e304be393f83632d3",
+          "key_after_hex": "dacccc18e556eb595b30f8981a58b228c2e44ad3adf0c039b226d6823e849d10",
+          "length_after": 5
+        }
+      ]
+    },
+    {
+      "label": "msg-fd9063b2",
+      "kind": "separate-hmacs-msg",
+      "hash": "sha256",
+      "key_hex": "c2387e1c3adee5da648f73bb789b0b1a19ff42f23dbdfa6093ed26e60d4c2948",
+      "steps": [
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "0d089b4c73c5c4d171d99041cd1773f336a0880d517fca65d8dbdeef501799fa",
+          "key_after_hex": "47a2a37fa02be80067d5a456ff6806513ca5e07630f52cb1c5fa54f82aa7e080",
+          "length_after": 1
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "faf4d800f1f9d499bfda0c32534b1eb4829c83b9a20282d6193d9ac5ecef80de",
+          "key_after_hex": "76913a49a792ffacb5bad060fb04d88449689d8f511781bbf7fbffb33973aaa0",
+          "length_after": 2
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "0aee929b6480ad9d1cba977f05d05232b3bbdbba7b28ef3f81d5e9b5065378e0",
+          "key_after_hex": "7e4bac8c49bf0f68ce345df3b418af1fceab776ed2f9a0448efcbb3435ed081d",
+          "length_after": 3
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "cd0ce7228c6240e218f0e9c740d8aee214fd557d9ed8b6703906aee4c48dce31",
+          "key_after_hex": "acd835e7fe0d73cb6ac73a31fe0362b79cbbf6f5869e3c25ac77794212a9eb5d",
+          "length_after": 4
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "fb9c70bab170aec30d9129f7ead295ef9ae853ea0d6decbc159feef5690476f5",
+          "key_after_hex": "1eaf1091c2a4ed030cea1fb021d710e4f6fc26d36d323bd6184cfc1e09c11aea",
+          "length_after": 5
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "42396e348ba7301498bfe2740c3e842438fb0939cd48fbebe4371f19bc120e52",
+          "key_after_hex": "b3aa00f33c1d9f20f86a6ae1d48822536d23356c1f66afe9d06071794021cdf9",
+          "length_after": 6
+        }
+      ]
+    },
+    {
+      "label": "msg-0e4ae592",
+      "kind": "separate-hmacs-msg",
+      "hash": "sha256",
+      "key_hex": "fc0eaca789bdf84b37a063db9b906cadd9052bcbb115dbc77f131b58fb6be2df",
+      "steps": [
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "a8c8da92d4b335319303a7cdb7cd573569fc85bd50ae560acd816c913659f6eb",
+          "key_after_hex": "0b6d1da4c6c13061fb67edb8febf559b6d89292126ebfdb3d615b0df8e0cfcb4",
+          "length_after": 1
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "8b264ff93e1bf20b732395180efee23299be13966ae00bc41e6befb28d18ce20",
+          "key_after_hex": "a90859279b458ea101cc384fc2b3d38cd5293d42e1b06fd9d5ab72d75c3af29a",
+          "length_after": 2
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "39d5c89d8a3168ed381380b762bcb8829682213b4cb7aaecc0a70d51194f717a",
+          "key_after_hex": "b5f432d9995d8b0f4877792184bdb32feae7a751105039a340abeaa33c6922fd",
+          "length_after": 3
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "5cf0cb04a5a446d3413cb5b63d6db0053f1ddc97e9adea8e3c45a5b69ee6a41e",
+          "key_after_hex": "b4eeb0df37d99bb1d5ef4265f67f3a35a8a1a21432ea428011b444fea8b91fae",
+          "length_after": 4
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "10451bb1df72d68ad9f5f0033f1c92996293f4215ac7c6b46a19e9d9f550c3d8",
+          "key_after_hex": "afa517770ca0b3003eaa4d06e348e2ac83f41e9196a798f406f5c15e8c570a0d",
+          "length_after": 5
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "f0f32191d0b5f4d6d60a747109eddddc54eab1e7ed54445cd1c088bde754399a",
+          "key_after_hex": "3a3c51ca5e1d111ff063ac8e3739087d29713e53e2bc1970f9b27ecec08c342f",
+          "length_after": 6
+        }
+      ]
+    },
+    {
+      "label": "msg-0a5e4414",
+      "kind": "separate-hmacs-msg",
+      "hash": "sha256",
+      "key_hex": "1a690f5bb039e0ffa90134bc9ff15a09a924bdede931ee55624cbc1484f32aa2",
+      "steps": [
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "3210ee6203db0f22c06c4473c6c4a5253f585acb7b3094e67704908e9f39aec5",
+          "key_after_hex": "cc191e3b1cf0a22c110d729fb773db9fc0a46261dcf04e16666d5e09f0d6e40c",
+          "length_after": 1
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "0ae2858e98fb926af7c58776ad9f8dc132015c4fc5f07be322d23d87bc6b6ee2",
+          "key_after_hex": "d8f2c6d9c2086f9afa19353f2979b79115245cbc148406228101d0fda134ed78",
+          "length_after": 2
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "d076fd6124c5f312260ca62c360fb62a573d84578f5765ffcba870e05704c962",
+          "key_after_hex": "75f57e56fe7d7f1b30a7a55085671c10ca673090871af75cd21384a1bca017fb",
+          "length_after": 3
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "dc8ef8f381a09845095432401e1e9bd909b892cc29749c0d5cd221c9e86be05a",
+          "key_after_hex": "9b44afeef5e2b652605716eef2911c160b28b3e4f53ee26549fc0f315c6c4180",
+          "length_after": 4
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "c325e09f246d62959fc6920c02c2858d506001407f38824ee9d6a95f83ad5c20",
+          "key_after_hex": "8691dc830062c6551e303373ba143dd383ae5d96c8f9f36b493fe3e14dde9699",
+          "length_after": 5
+        },
+        {
+          "data_hex": "0201",
+          "length": 32,
+          "out_hex": "15c6e873bada1b9689ddc019a7818a0cd03d3cf7f1a1caa271259a9844c1219c",
+          "key_after_hex": "a591c2a860ba221608bf65211e9097556461962a382e88dbb3439fd23972322e",
+          "length_after": 6
+        }
+      ]
+    }
+  ]
+}

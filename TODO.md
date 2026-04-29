@@ -7,6 +7,27 @@ Ordering reflects dependencies — do top to bottom.
 
 ---
 
+## Status snapshot (2026-04-29)
+
+| Stage | Status | Gate test |
+|---|---|---|
+| 0 — Workspace + pipeline | ✅ | `kdf_hkdf` |
+| 1.1 — `omemo-xeddsa` | ✅ | `xeddsa` |
+| 1.2 — `omemo-doubleratchet` | ✅ | `double_ratchet` |
+| 1.3 — `omemo-x3dh` | ✅ | `x3dh` |
+| 1.4 — `omemo-twomemo` | ✅ | `twomemo` (1 KEX + 3 messages, byte-equal protobuf) |
+| 2 — `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
+| 3 — `omemo-session` | ✅ | persist/restart 1:1 round-trip |
+| 4 — `omemo-pep` | ⏳ | Prosody integration test |
+| 5 — Group OMEMO | ⏳ | 3 omemo-rs + 1 Conversations in MUC |
+| 6 — Real-client interop | ⏳ | Conversations + Dino DM/MUC |
+
+**Stage 1 (whole crypto layer) complete.** 10 replay tests across 8 fixtures,
+all byte-equal with the Syndace Python stack.
+`cargo test --workspace` clean.
+
+---
+
 ## Stage 0 — Workspace + Test-Vector Pipeline ✅
 
 - [x] Cargo workspace with 8 stub crates
@@ -27,72 +48,88 @@ Ordering reflects dependencies — do top to bottom.
 - [x] Fixtures restricted to clamped priv (ADR-005)
 - [x] **Gate**: `cargo test -p omemo-test-harness --test xeddsa` green
 
-### 1.2 — `omemo-doubleratchet` ⏳
+### 1.2 — `omemo-doubleratchet` ✅
 
 In dependency order. Each item: generator script + Rust port + replay
 test, all green together.
 
-- [ ] AEAD (AES-256-CBC + HMAC-SHA-256, 16-byte tag)
-      - `gen_aead_aes_hmac.py`, `tests/aead_aes_hmac.rs`,
-        `crates/omemo-doubleratchet/src/aead.rs`
-- [ ] HKDF wrapper (already covered by Stage 0; just expose typed wrapper)
-- [ ] Separate-HMACs message chain KDF
-      - `gen_kdf_separate_hmacs.py`, `tests/kdf_separate_hmacs.rs`
-- [ ] Generic chain wrapper (`KDFChain`)
-- [ ] Symmetric key ratchet (one chain)
-      - `gen_symmetric_key_ratchet.py`, replay
-- [ ] Curve25519 DH ratchet
-      - `gen_dh_ratchet.py`, replay
-- [ ] Top-level `DoubleRatchet` state machine
-      - skipped-message-keys cap (`MAX_SKIP=1000`)
-      - header AD construction
+- [x] AEAD (AES-256-CBC + HMAC) — base recommended AEAD (full HMAC tail).
+      The 16-byte truncation is a twomemo-layer override and lives in 1.4.
+      - `gen_aead_aes_hmac.py` (20 cases), tamper tests, `src/aead.rs`
+- [x] HKDF typed wrapper (`OmemoRootKdf`) — Stage 0 fixture covers correctness
+- [x] Separate-HMACs message chain KDF (17 cases)
+- [x] Generic `KDFChain` wrapper (6 multi-step cases: HKDF root + msg chain)
+- [x] Symmetric key ratchet (3 cases × 19 ops, incl. send-chain rotation)
+- [x] Curve25519 DH ratchet — Alice ↔ Bob 10-op scenario with mid-stream
+      DH ratchet step (deterministic priv injection via `FixedDhPrivProvider`)
+- [x] Top-level `DoubleRatchet` state machine
+      - skipped-message-keys cap (`MAX_SKIP=1000`, FIFO)
+      - header AD construction (configurable `BuildAdFn`; default
+        `ad || ratchet_pub || pn(LE) || n(LE)`)
+      - decrypt-on-clone semantics (clone DH ratchet, only commit on
+        AEAD success)
       - **Gate**: 4-message round-trip with mid-conversation DH ratchet
         step + 1 skipped + 1 out-of-order delivery, byte-equal with
-        Python.
+        Python ✅ (`tests/double_ratchet.rs`).
 
-### 1.3 — `omemo-x3dh` ⏳
+### 1.3 — `omemo-x3dh` ✅
 
-- [ ] Bundle generation (IK / SPK / OPKs)
-- [ ] Bundle verification (SPK signature check via XEdDSA)
-- [ ] Active session (Alice initiates)
-- [ ] Passive session (Bob receives KEX, consumes OPK)
-- [ ] OPK lifecycle (consumed-once enforcement)
-- [ ] **Gate**: full active/passive bundle exchange replays byte-equal
-      with python-x3dh including OPK consumption.
+- [x] Bundle generation (IK Ed25519 form / SPK Curve25519 + sig / OPK Curve25519)
+- [x] Bundle verification (XEdDSA SPK sig over `_encode_public_key(spk_pub) = spk_pub`)
+- [x] Active session (Alice initiates) — `get_shared_secret_active`
+- [x] Passive session (Bob receives KEX) — `get_shared_secret_passive`
+- [ ] OPK lifecycle (consumed-once enforcement) — currently the caller is
+      responsible for deleting the consumed OPK; Stage 3 (omemo-session)
+      will own this when sessions persist.
+- [x] **Gate**: full active/passive bundle exchange replays byte-equal with
+      python-x3dh, 4 cases (3 with-OPK + 1 no-OPK), AD + SS byte-equal,
+      bundle including SPK signature byte-equal. ✅
+      `tests/x3dh.rs`
 
-### 1.4 — `omemo-twomemo` ⏳
+### 1.4 — `omemo-twomemo` ✅
 
-- [ ] `prost-build` codegen of `twomemo.proto` (already in
-      `test-vectors/twomemo/twomemo.proto`)
-- [ ] `OMEMOMessage` encode/decode
-- [ ] `OMEMOAuthenticatedMessage` encode/decode
-- [ ] `OMEMOKeyExchange` encode/decode
-- [ ] Glue: take `omemo-doubleratchet` + `omemo-x3dh` outputs and emit
-      protobuf bytes
-- [ ] **Gate**: "Alice initiates with Bob, sends 1 KEX + 3 messages"
-      end-to-end protobuf wire format byte-equal with python-twomemo.
+- [x] `prost-build` codegen of `twomemo.proto` via `protoc-bin-vendored`
+      (no system-wide `protoc` install required)
+- [x] `OMEMOMessage` encode/decode
+- [x] `OMEMOAuthenticatedMessage` encode/decode
+- [x] `OMEMOKeyExchange` encode/decode
+- [x] Glue: `TwomemoSession` (DH ratchet + skipped-keys FIFO) +
+      `aead_encrypt`/`aead_decrypt` overrides (16-byte HMAC truncation,
+      protobuf-aware AD parsing) + `build_key_exchange`/`parse_key_exchange`.
+- [x] **Gate**: 1 KEX + 3 follow-up messages, byte-equal with python-twomemo
+      at the protobuf wire-format level. Bob bootstraps from the KEX,
+      decrypts M0 and the 3 follow-ups. ✅
+      `tests/twomemo.rs`
 
-## Stage 2 — `omemo-stanza` (XEP-0384 v0.9 stanza)
+## Stage 2 — `omemo-stanza` (XEP-0384 v0.9 stanza) ✅
 
-- [ ] Choose XML library (likely `quick-xml`, MIT)
-- [ ] `<encrypted>` envelope encode/decode (with multiple `<keys jid=>`,
-      `<key rid=>`, `kex` flag)
-- [ ] `<bundle>` encode/decode (spk/spks/ik/prekeys)
-- [ ] `<list>` (device list) encode/decode
-- [ ] **Gate**: round-trip of every example stanza in XEP-0384 v0.9 §3
-      and §5 + a custom 3-recipient message. Canonicalised attribute
-      order.
+- [x] `quick-xml 0.36` + `base64 0.22` (MIT)
+- [x] `<encrypted>` envelope encode/decode (multi-recipient `<keys jid=>`,
+      `<key rid=>` with optional `kex` flag, optional `<payload>`)
+- [x] `<bundle>` encode/decode (`<spk id=>` / `<spks>` / `<ik>` / `<prekeys>`)
+- [x] `<list>` (device list) encode/decode (with optional `label`)
+- [x] **Gate**: 11 tests in `crates/omemo-stanza/tests/roundtrip.rs` —
+      6 canonical round-trips (encrypted×3 incl. KEX/key-only/3-recipient,
+      bundle, list, empty list), 3 tolerance tests (attribute reorder,
+      self-closing root, XML decl + whitespace), 2 negative tests. ✅
 
-## Stage 3 — `omemo-session` (SQLite store)
+## Stage 3 — `omemo-session` (SQLite store) ✅
 
-- [ ] Schema migration system (`migrations/0001_init.sql` etc.)
-- [ ] Tables: identity, signed_prekey, prekey, device_list, session,
-      message_keys_skipped
-- [ ] CRUD for each table
-- [ ] Ratchet-state BLOB serde (deterministic, length-prefixed)
-- [ ] WAL mode, transaction wrappers
-- [ ] **Gate**: identity creation → bundle gen → 1:1 session round-trip
-      → process restart → session continues without rekeying.
+- [x] Schema migration system (`migrations/0001_init.sql` —
+      `schema_version` table + forward-only file-based migrator)
+- [x] 6 tables: identity, signed_prekey, prekey, device_list, session,
+      message_keys_skipped (last is schema-only until Stage 5+)
+- [x] CRUD per table: identity, SPK (with `current_spk()`), OPK
+      (with `consume_opk()` consumed-once enforcement), device list,
+      session (BLOB), session-snapshot load/save
+- [x] Ratchet-state BLOB serde — `TwomemoSessionSnapshot::encode/decode`
+      (versioned, length-prefixed, deterministic). Lossless round-trip
+      verified by `tests/twomemo.rs::session_snapshot_round_trip`.
+- [x] WAL mode (`PRAGMA journal_mode=WAL` in migration), foreign keys ON
+- [x] **Gate**: `tests/persist_round_trip.rs` — identity creation +
+      bundle gen + 1:1 session round-trip + drop both stores + reopen
+      + restore sessions + send M2 from restored state, decrypted
+      successfully without re-keying. OPK consumed flag persisted. ✅
 
 ## Stage 4 — `omemo-pep` (XMPP integration)
 

@@ -1,0 +1,158 @@
+{
+  "source": "python-doubleratchet 1.3.0 / doubleratchet.symmetric_key_ratchet",
+  "algorithm": "SymmetricKeyRatchet",
+  "note": "constant b'\\x02\\x01' = twomemo MESSAGE_CHAIN_CONSTANT",
+  "cases": [
+    {
+      "label": "3e657de7",
+      "constant_hex": "0201",
+      "ops": [
+        {
+          "op": "replace_send",
+          "key_hex": "5adb4973d6b22b6429e111cb66c02173ecb8d28693055a6472bc91a5e3d0fa62",
+          "send_len_after": 0,
+          "recv_len_after": null,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "enc",
+          "out_hex": "6fe863afb5cef24e1cdcb4e35e1e85ab9399e31dbf96a7c1774e00b367c476c9",
+          "send_len_after": 1,
+          "recv_len_after": null,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "enc",
+          "out_hex": "9ad8670b11d72df13fea25283663ccf2b5072ef690045c26ad7687a14d0d3022",
+          "send_len_after": 2,
+          "recv_len_after": null,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "enc",
+          "out_hex": "f39618550d49045f9689b69c67216924dd799f1a5a58281baaa9b09d6d3551ce",
+          "send_len_after": 3,
+          "recv_len_after": null,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "replace_recv",
+          "key_hex": "a12fbd22b8c7b04503a15bd600121887063a7ad655c4d7f66c8637b760a9a8e9",
+          "send_len_after": 3,
+          "recv_len_after": 0,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "dec",
+          "out_hex": "093200c7f43f6d5efa69ca51d41496b9fdcf21bfcdc20bfbe024c13109255330",
+          "send_len_after": 3,
+          "recv_len_after": 1,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "dec",
+          "out_hex": "636d0e1608594eb5feeeae1b37d195e9b8853d58ab088d53e5cc8ca3946c4a67",
+          "send_len_after": 3,
+          "recv_len_after": 2,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "replace_send",
+          "key_hex": "2d2b2e160217324d8dfd218c423c0f5f0cc55c9c4be1db4a85bfe5bd89af53d5",
+          "send_len_after": 0,
+          "recv_len_after": 2,
+          "prev_send_len_after": 3
+        },
+        {
+          "op": "enc",
+          "out_hex": "f1aa4bb9e082e4f74d6bf4a19c953287ded34e4e2bf44ce3937077cd028ce623",
+          "send_len_after": 1,
+          "recv_len_after": 2,
+          "prev_send_len_after": 3
+        },
+        {
+          "op": "dec",
+          "out_hex": "8d168792681da45c8ec6e0fd871efca2eab7c642111317e0a4f55fcf6e5a1125",
+          "send_len_after": 1,
+          "recv_len_after": 3,
+          "prev_send_len_after": 3
+        }
+      ]
+    },
+    {
+      "label": "309feaac",
+      "constant_hex": "0201",
+      "ops": [
+        {
+          "op": "replace_recv",
+          "key_hex": "cc86b5d14a9b86d37dd35e2e815c115b7baa8e0f889edac41c69045cd12125ef",
+          "send_len_after": null,
+          "recv_len_after": 0,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "dec",
+          "out_hex": "ac142ca5d9c5b56e90e34802f7a693570e4f2d7ce2bb9f736128a44a5f4c12d0",
+          "send_len_after": null,
+          "recv_len_after": 1,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "dec",
+          "out_hex": "364d03149fb950e651624da709e32713a40341b28de72919e1cbce3e48c85ce9",
+          "send_len_after": null,
+          "recv_len_after": 2,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "dec",
+          "out_hex": "75efe2c3549b6106af2fbd683465f0aff35c4ffbc8c32604050bba218be7c75d",
+          "send_len_after": null,
+          "recv_len_after": 3,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "dec",
+          "out_hex": "3e2cebc94ea44eb7fc7510446af418d57e9f1344a0b04d4c8fc5e2596d5a2a72",
+          "send_len_after": null,
+          "recv_len_after": 4,
+          "prev_send_len_after": null
+        }
+      ]
+    },
+    {
+      "label": "291451f3",
+      "constant_hex": "0201",
+      "ops": [
+        {
+          "op": "replace_send",
+          "key_hex": "2dc77dadc958f9792f6a89bc1228666be14a375007bfa3793ca225a02165fdce",
+          "send_len_after": 0,
+          "recv_len_after": null,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "enc",
+          "out_hex": "c09495f2f7138a00e68fd772f6b42dde15506ddeb33c6c380bf49059604c4d09",
+          "send_len_after": 1,
+          "recv_len_after": null,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "enc",
+          "out_hex": "c67ecee03e817d7bfc6ad4f891b44aca6d3ec3697862e5829b741b6b784681b7",
+          "send_len_after": 2,
+          "recv_len_after": null,
+          "prev_send_len_after": null
+        },
+        {
+          "op": "enc",
+          "out_hex": "3f6fa90ceef5ff14c0dcc8f8b9de83b805d5ced95c52b763ab50f8043669f11c",
+          "send_len_after": 3,
+          "recv_len_after": null,
+          "prev_send_len_after": null
+        }
+      ]
+    }
+  ]
+}

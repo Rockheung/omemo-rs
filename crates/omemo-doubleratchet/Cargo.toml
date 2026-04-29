@@ -11,7 +11,7 @@ hkdf = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 aes = { workspace = true }
-cbc = { workspace = true }
+cbc = { workspace = true, features = ["alloc"] }
 x25519-dalek = { workspace = true }
 rand_core = { workspace = true }
 zeroize = { workspace = true }
