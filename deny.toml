@@ -1,0 +1,91 @@
+# cargo-deny configuration — enforces the "no AGPL/GPL in the runtime
+# graph" posture this project is built around.
+#
+# See ADR-002 in docs/decisions.md for rationale.
+#
+# Run locally: `cargo install cargo-deny && cargo deny check`
+# Run in CI:   .github/workflows/ci.yml `deny` job (EmbarkStudios action).
+
+[graph]
+# Include all targets so we don't accidentally let a Linux-only crate
+# slip through with a forbidden licence.
+all-features = false
+no-default-features = false
+
+# ---------------------------------------------------------------------------
+# Licences — the headline reason this file exists.
+# ---------------------------------------------------------------------------
+
+[licenses]
+# Allow-list only. Any crate whose SPDX expression isn't satisfied by the
+# union below fails the check. Add a new SPDX identifier here only when a
+# real (transitive) dependency requires it — keep the list tight so AGPL/
+# GPL/LGPL never accidentally creep in.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+
+# Confidence threshold for SPDX detection. 0.93 is the cargo-deny default
+# and works for nearly every crate in the wild.
+confidence-threshold = 0.93
+
+# Per-crate exceptions, used only when SPDX detection misclassifies a
+# permissive licence. Add here on a case-by-case basis with a comment
+# explaining why.
+exceptions = []
+
+# ---------------------------------------------------------------------------
+# Bans — duplicate versions and disallowed crates.
+# ---------------------------------------------------------------------------
+
+[bans]
+# Multiple versions of the same crate bloat the binary. Warn rather than
+# deny: the RustCrypto / async ecosystems still occasionally have legitimate
+# reasons to pull in two versions.
+multiple-versions = "warn"
+# Wildcard external deps would be a real supply-chain problem. We allow
+# them because all our wildcards are intra-workspace path deps
+# (`omemo-doubleratchet = { path = "../omemo-doubleratchet" }` etc.),
+# which `cargo` resolves locally and deterministically — not from
+# crates.io. If we ever publish, switch back to "deny" or explicitly
+# pin a version on each path dep.
+wildcards = "allow"
+
+# Crates we never want to depend on, regardless of licence.
+deny = [
+    # AGPL Signal stack — the entire point of this project's existence is
+    # to avoid this dependency. If anyone adds it, CI fails.
+    { name = "libsignal-protocol" },
+    { name = "libsignal-protocol-c" },
+    # `openssl` — we standardise on RustCrypto + bundled SQLite. If a
+    # transitive dep starts pulling in openssl-sys we want to know.
+    { name = "openssl" },
+    { name = "openssl-sys" },
+]
+
+# ---------------------------------------------------------------------------
+# Sources — only crates.io and explicitly-listed git registries.
+# ---------------------------------------------------------------------------
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+# ---------------------------------------------------------------------------
+# Advisories — security and yanked-crate gating.
+# ---------------------------------------------------------------------------
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Fail on known security advisories. Override on a per-advisory basis with
+# `ignore = ["RUSTSEC-YYYY-NNNN"]` when the advisory does not affect our
+# usage; document why in a comment.
+yanked = "warn"
+ignore = []

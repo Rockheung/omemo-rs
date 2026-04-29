@@ -47,6 +47,20 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-targets
 
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The action caches the rustsec advisory-db so the run is fast on
+      # repeat. It runs `cargo deny check` against deny.toml at the repo
+      # root and fails on any error-level finding.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --workspace --all-features
+
   fixture-drift:
     name: regenerate fixtures and diff
     runs-on: ubuntu-latest
