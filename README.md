@@ -5,6 +5,8 @@ XMPP. Built to serve as the E2EE layer of an XMPP-based bot orchestrator
 (the planned successor to [nan-curunir](https://github.com/Rockheung/nan-curunir)),
 without pulling AGPL dependencies into the runtime graph.
 
+Other languages: [한국어](README.ko.md)
+
 ## Why
 
 The Rust ecosystem's reference for Signal-style E2EE is `signalapp/libsignal`,

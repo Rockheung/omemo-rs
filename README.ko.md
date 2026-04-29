@@ -1,0 +1,133 @@
+# omemo-rs
+
+XMPP를 위한 **OMEMO 2** (XEP-0384 v0.9) 의 순수 Rust · MIT 라이선스 구현입니다.
+런타임 의존성 그래프에 AGPL 코드를 끌어들이지 않으면서, XMPP 기반 봇 오케스트레이터
+([nan-curunir](https://github.com/Rockheung/nan-curunir)의 후속 프로젝트)의 E2EE
+계층으로 사용하기 위해 만들었습니다.
+
+다른 언어로 보기: [English](README.md)
+
+## 왜 만들었나
+
+Rust 생태계에서 Signal 계열 E2EE의 레퍼런스는 `signalapp/libsignal`인데
+**AGPL-3.0**입니다. OMEMO 0.3.0 (`oldmemo`) 구현체도 libsignal에서 파생되어
+같은 라이선스를 전이적으로 상속받습니다. 이 프로젝트는 양쪽 모두 우회하기 위해
+permissive 라이선스인 [Syndace Python 스택](https://github.com/Syndace)을
+[RustCrypto](https://github.com/RustCrypto) 프리미티브 위에 Rust로 포팅하고,
+OMEMO 2 만 구현합니다.
+
+전체 라이선스 체인 분석과 ADR-002는 `docs/architecture.md` §3 참조.
+
+## 진행 현황
+
+| 단계 | 크레이트 | 상태 | 게이트 테스트 |
+|---|---|---|---|
+| 0 | 워크스페이스 + replay 파이프라인 | ✅ | `kdf_hkdf` |
+| 1.1 | `omemo-xeddsa` | ✅ | `xeddsa` (104 assertion) |
+| 1.2 | `omemo-doubleratchet` | ✅ | DH 스텝 + skip + OOO 포함 4-msg 라운드트립 |
+| 1.3 | `omemo-x3dh` | ✅ | active+passive 번들 교환 byte-equal |
+| 1.4 | `omemo-twomemo` | ✅ | 1 KEX + 3 message 의 protobuf byte-equal |
+| 2 | `omemo-stanza` | ✅ | XEP-0384 §3+§5 라운드트립 + 3-수신자 케이스 |
+| 3 | `omemo-session` | ✅ | identity + 번들 + 영속 + 재시작, re-key 없음 |
+| 4 | `omemo-pep` | ⏳ | Prosody 서버 필요 |
+| 5 | 그룹 OMEMO (MUC) | ⏳ | Prosody 필요 |
+| 6 | 실 클라이언트 상호운용 | ⏳ | Conversations / Dino 필요 |
+
+암호 계층(Stage 1)은 모든 픽스처에서 Syndace Python 스택과 byte-equal로 검증됩니다.
+`cargo test --workspace` 가 28개의 test result group 을 통과합니다.
+
+## 워크스페이스 레이아웃
+
+```
+omemo-rs/
+├── crates/
+│   ├── omemo-xeddsa/          # XEdDSA + Curve25519/Ed25519 + X25519
+│   ├── omemo-doubleratchet/   # Signal 스펙 Double Ratchet
+│   ├── omemo-x3dh/            # X3DH 키 합의
+│   ├── omemo-twomemo/         # OMEMO 2 백엔드 (twomemo.proto)
+│   ├── omemo-stanza/          # XEP-0384 v0.9 스탠자 인코드/파싱
+│   ├── omemo-session/         # SQLite 기반 영속 저장
+│   ├── omemo-pep/             # XEP-0163 PEP 통합 (Stage 4)
+│   └── omemo-test-harness/    # 크로스-언어 픽스처 replay (cargo test 전용)
+├── docs/                      # 아키텍처, 파이프라인, ADR, stages
+├── test-vectors/
+│   ├── fixtures/              # 커밋된 JSON 픽스처 (Stage 3 시점 10개)
+│   ├── scripts/gen_*.py       # 재생성 스크립트
+│   └── reference/             # 클론된 upstream Python repo (gitignored)
+└── TODO.md                    # 실시간 태스크 리스트 (docs/stages.md 의 미러)
+```
+
+## 테스트 방법론
+
+모든 Rust 암호 프리미티브는 대응되는 Syndace Python 구현과 **바이트 단위로 동일한**
+출력을 내야 합니다. Python 구현체를 결정적 오라클로 사용합니다:
+생성기 스크립트(`scripts/gen_*.py`)가 결정적 입력을 Python 레퍼런스에 넣고
+`(입력, 기대 출력)` 쌍을 `fixtures/<primitive>.json` 으로 직렬화합니다.
+Rust replay 테스트는 그 JSON 을 로드해 동일 입력으로 우리 구현을 돌리고
+저장된 출력과 `assert_eq!` 합니다.
+
+픽스처는 커밋되어 있어서 Python venv 없이도 `cargo test` 만으로 검증 가능합니다.
+자세한 내용과 픽스처 인벤토리는 `docs/pipeline.md` 참조.
+
+## 빠른 시작
+
+```bash
+git clone https://github.com/Rockheung/omemo-rs.git
+cd omemo-rs
+cargo test --workspace
+```
+
+upstream Python 패키지 버전이 올라간 뒤 픽스처를 재생성하려면:
+
+```bash
+cd test-vectors
+git clone --depth 1 https://github.com/Syndace/python-doubleratchet.git reference/python-doubleratchet
+git clone --depth 1 https://github.com/Syndace/python-x3dh.git           reference/python-x3dh
+git clone --depth 1 https://github.com/Syndace/python-xeddsa.git         reference/python-xeddsa
+git clone --depth 1 https://github.com/Syndace/python-twomemo.git        reference/python-twomemo
+git clone --depth 1 https://github.com/Syndace/python-omemo.git          reference/python-omemo
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install doubleratchet==1.3.0 x3dh==1.3.0 xeddsa==1.2.0 twomemo==2.1.0 'omemo>=2,<3' \
+            cryptography pydantic
+
+for s in scripts/gen_*.py; do python "$s"; done
+git diff fixtures/   # upstream 가 표류하지 않았다면 빈 출력이어야 함
+```
+
+## 라이선스
+
+MIT (`LICENSE` 파일이 있으면 그것, 없으면 `Cargo.toml`의 `[workspace.package]` 참조).
+
+런타임 크레이트 그래프는 MIT/Apache/BSD 코드만 포함합니다:
+
+* `curve25519-dalek`, `ed25519-dalek`, `x25519-dalek`, `hkdf`, `hmac`,
+  `sha2`, `aes`, `cbc` — RustCrypto, BSD/MIT/Apache
+* `prost` — Apache-2.0
+* `quick-xml` — MIT
+* `rusqlite` (번들 SQLite 포함) — MIT / public-domain SQLite 소스
+
+Python 레퍼런스 패키지들은 **픽스처 생성 시점에만** 쓰이고 런타임 크레이트 그래프에는
+포함되지 않습니다. AGPL-3.0인 `libsignal` (Rust) 과 `python-oldmemo` 는 의도적으로
+의존하지 **않습니다**.
+
+## 문서
+
+* [`docs/architecture.md`](docs/architecture.md) — 최상위 설계, 크레이트 책임 분배,
+  OMEMO 2 알고리즘 선택지.
+* [`docs/pipeline.md`](docs/pipeline.md) — 픽스처 replay 인프라 + 프리미티브별
+  인벤토리.
+* [`docs/stages.md`](docs/stages.md) — 단계별 개발 계획과 게이트 기준.
+* [`docs/decisions.md`](docs/decisions.md) — 아키텍처 결정 로그
+  (ADR-001 ~ ADR-006).
+* [`TODO.md`](TODO.md) — 체크박스 형태의 실시간 태스크 리스트.
+
+## 범위 외 (Out of scope)
+
+* OMEMO 0.3.0 (`oldmemo` / siacs axolotl 네임스페이스) — AGPL 체인.
+* 하드웨어 토큰 / 스마트카드 기반 identity key.
+* Wasm 빌드 (저장 계층이 파일시스템 + SQLite 를 가정).
+* Megolm 스타일 그룹 암호화 최적화 (OMEMO 2 의 디바이스별 팬아웃은
+  본 프로젝트의 타깃인 봇 규모 룸에서는 충분).
