@@ -14,7 +14,7 @@
 //! * `<keys>`:      `jid`.
 //! * `<key>`:       `rid`, then `kex` (only present if true).
 //! * `<spk>` / `<pk>`: `id`.
-//! * `<device>`:    `id`, then `label` (only if present).
+//! * `<device>`:    `id`, then `label` (if present), then `labelsig` (if present).
 
 use omemo_stanza::{Bundle, DeviceList, Encrypted};
 
@@ -72,16 +72,17 @@ const BUNDLE: &str = "\
 </prekeys>\
 </bundle>";
 
-// XEP-0384 §5.2 — device list with mix of labelled and unlabelled devices.
+// XEP-0384 §5.3.1 — device list with a mix of labelled (signed and not),
+// and unlabelled devices.
 const DEVICE_LIST: &str = "\
-<list xmlns=\"urn:xmpp:omemo:2\">\
-<device id=\"27183\" label=\"Phone\"/>\
+<devices xmlns=\"urn:xmpp:omemo:2\">\
+<device id=\"27183\" label=\"Phone\" labelsig=\"c2lnbmF0dXJl\"/>\
 <device id=\"27184\"/>\
 <device id=\"27185\" label=\"Desktop\"/>\
-</list>";
+</devices>";
 
 // Empty device list (just-removed-all-devices state).
-const EMPTY_DEVICE_LIST: &str = "<list xmlns=\"urn:xmpp:omemo:2\"></list>";
+const EMPTY_DEVICE_LIST: &str = "<devices xmlns=\"urn:xmpp:omemo:2\"></devices>";
 
 fn roundtrip_encrypted(canonical: &str) {
     let parsed = Encrypted::parse(canonical).expect("parse");
@@ -166,7 +167,7 @@ fn parse_accepts_attribute_reordering() {
 
 #[test]
 fn parse_accepts_self_closing_list() {
-    let alt = "<list xmlns=\"urn:xmpp:omemo:2\"/>";
+    let alt = "<devices xmlns=\"urn:xmpp:omemo:2\"/>";
     let parsed = DeviceList::parse(alt).expect("parse");
     assert!(parsed.devices.is_empty());
 }
@@ -175,10 +176,10 @@ fn parse_accepts_self_closing_list() {
 fn parse_accepts_xml_decl_and_whitespace() {
     let alt = "\
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<list xmlns=\"urn:xmpp:omemo:2\">
+<devices xmlns=\"urn:xmpp:omemo:2\">
   <device id=\"42\" label=\"Phone\"/>
   <device id=\"43\"/>
-</list>";
+</devices>";
     let parsed = DeviceList::parse(alt).expect("parse");
     assert_eq!(parsed.devices.len(), 2);
     assert_eq!(parsed.devices[0].id, 42);

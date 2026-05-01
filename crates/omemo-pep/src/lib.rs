@@ -1,24 +1,28 @@
 //! XMPP integration layer for OMEMO 2.
 //!
 //! Stage 4 (`omemo-pep`) is the first crate in the workspace that touches
-//! the network. It will eventually own:
+//! the network. It glues `omemo-twomemo` (crypto + wire format) and
+//! `omemo-stanza` (XEP-0384 envelope) onto a real XMPP stream via
+//! `tokio-xmpp` 5.0.
 //!
-//! * PEP (XEP-0163) publish/fetch for own `urn:xmpp:omemo:2:devices` and
-//!   `urn:xmpp:omemo:2:bundles:{deviceId}` nodes.
-//! * Stanza interceptors that wrap/unwrap `<encrypted>` on outbound /
-//!   inbound `<message>` (delegating crypto to `omemo-twomemo`).
-//! * SCE envelope wrap/unwrap (already in `omemo-stanza::sce`).
+//! Current capabilities:
+//! * Plaintext connect helper for localhost integration tests.
+//! * PEP publish/fetch for the OMEMO 2 device list
+//!   (`urn:xmpp:omemo:2:devices`).
 //!
-//! This first cut exposes only a thin transport convenience: a plaintext
-//! connect helper for localhost integration tests. Production code on
-//! the public network must use StartTLS and SRV resolution; that path
-//! comes online when we wire up real PEP flows.
+//! Planned (next sub-tasks): bundle publish/fetch, stanza interceptors
+//! (encrypt/decrypt `<message>`), trust-on-first-use device acceptance,
+//! StartTLS for production use.
 //!
 //! Licence note: depends on MPL-2.0 crates (`tokio-xmpp`, `xmpp-parsers`,
 //! `jid`) per ADR-007. Our own code remains MIT.
 
 pub use jid::BareJid;
+pub use omemo_stanza::{Device, DeviceList};
 pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event};
+
+mod pep;
+pub use pep::{fetch_device_list, publish_device_list, PepError, DEVICES_NODE, ITEM_ID_CURRENT};
 
 /// Build a `tokio-xmpp` client that connects in cleartext to a fixed
 /// `host:port` socket address.

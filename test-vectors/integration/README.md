@@ -41,3 +41,10 @@ cargo test --workspace -- --ignored
   Do not borrow this config for anything other than local CI.
 * The `prosody-data` volume persists the user database across `up`/`down`
   cycles. Add `-v` to `down` to wipe it.
+* If integration tests start flaking with `login timed out`, the in-memory
+  Prosody state may have drifted (e.g. from killed test runs leaving
+  half-open sessions). Restart with `docker compose restart prosody` —
+  the user database in `prosody-data` is preserved.
+* PEP integration tests use **bob** while connect tests use **alice**, so
+  the two test binaries can run in parallel without two sessions for the
+  same account colliding on Prosody.

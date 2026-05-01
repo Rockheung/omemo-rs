@@ -147,9 +147,20 @@ test, all green together.
 - [x] First connect+auth integration test (`#[ignore]`'d so default
       `cargo test` stays self-contained):
       `omemo-pep::tests::connect::alice_authenticates_and_binds`.
-- [ ] PEP publish: own device list (`urn:xmpp:omemo:2:devices`) and
-      own bundle (`urn:xmpp:omemo:2:bundles:{deviceId}`)
-- [ ] PEP fetch: peer device list, peer bundle on demand
+- [x] Fix `omemo-stanza::DeviceList` element name — XEP-0384 v0.9 §5.3.1
+      uses `<devices>` (plural), not `<list>`. Added `labelsig` attribute
+      on `Device` for the XEdDSA signature over the label. All 11
+      stanza round-trip tests still green.
+- [x] PEP publish: own device list (`urn:xmpp:omemo:2:devices`) —
+      `omemo_pep::publish_device_list`. Item id `"current"`.
+- [x] PEP self-fetch: own device list — `omemo_pep::fetch_device_list`,
+      with `peer: Option<BareJid>` so `None` means own account (works
+      around Prosody self-PEP iq-tracker key mismatch — see
+      `fetch_device_list` doc).
+- [x] Integration test: `bob_publishes_and_fetches_own_device_list`
+      round-trips a 3-device list via Prosody.
+- [ ] PEP publish: own bundle (`urn:xmpp:omemo:2:bundles:{deviceId}`)
+- [ ] PEP fetch: peer device list, peer bundle on demand (peer JID variant)
 - [ ] Stanza interceptor: encrypt outgoing `<message>` if recipient has
       device list
 - [ ] Stanza interceptor: decrypt incoming `<message>` with `<encrypted>`

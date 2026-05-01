@@ -998,8 +998,10 @@ dependencies = [
 name = "omemo-pep"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "futures-util",
  "jid",
+ "omemo-stanza",
  "thiserror 1.0.69",
  "tokio",
  "tokio-xmpp",

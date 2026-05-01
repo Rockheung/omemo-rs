@@ -5,7 +5,7 @@
 //! 1. `<encrypted xmlns='urn:xmpp:omemo:2'>` — the message envelope
 //!    containing per-recipient encrypted keys + an optional SCE payload.
 //! 2. `<bundle xmlns='urn:xmpp:omemo:2'>` — published per device on PEP.
-//! 3. `<list xmlns='urn:xmpp:omemo:2'>` — per-account device list on PEP.
+//! 3. `<devices xmlns='urn:xmpp:omemo:2'>` — per-account device list on PEP.
 //! 4. `<envelope xmlns='urn:xmpp:sce:1'>` — XEP-0420 Stanza Content
 //!    Encryption envelope. See [`sce`].
 //!
@@ -108,6 +108,11 @@ pub struct DeviceList {
 pub struct Device {
     pub id: u32,
     pub label: Option<String>,
+    /// XEdDSA signature over `label`, base64 on the wire. Only present
+    /// when `label` is set; the spec requires a present `label` to be
+    /// signed (XEP-0384 v0.9 §5.3.1) so other devices can detect
+    /// tampering.
+    pub labelsig: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -499,20 +504,20 @@ impl DeviceList {
         loop {
             match reader.read_event()? {
                 Event::Decl(_) | Event::DocType(_) | Event::Comment(_) | Event::PI(_) => {}
-                Event::Start(s) if local_name(s.name()) == b"list" => break,
-                Event::Empty(s) if local_name(s.name()) == b"list" => {
+                Event::Start(s) if local_name(s.name()) == b"devices" => break,
+                Event::Empty(s) if local_name(s.name()) == b"devices" => {
                     let _ = s;
                     return Ok(DeviceList { devices: vec![] });
                 }
                 Event::Eof => {
                     return Err(StanzaError::UnexpectedRoot {
-                        expected: "list",
+                        expected: "devices",
                         got: "(eof)".into(),
                     })
                 }
                 ev => {
                     return Err(StanzaError::UnexpectedRoot {
-                        expected: "list",
+                        expected: "devices",
                         got: format!("{:?}", ev),
                     })
                 }
@@ -525,10 +530,18 @@ impl DeviceList {
                 Event::Start(s) | Event::Empty(s) if local_name(s.name()) == b"device" => {
                     let id = req_u32_attr(&s, "id")?;
                     let label = attr_str(&s, "label")?.map(|c| c.into_owned());
-                    devices.push(Device { id, label });
+                    let labelsig = match attr_str(&s, "labelsig")? {
+                        Some(v) => Some(b64_decode(v.as_ref())?),
+                        None => None,
+                    };
+                    devices.push(Device {
+                        id,
+                        label,
+                        labelsig,
+                    });
                 }
-                Event::End(e) if local_name(e.name()) == b"list" => break,
-                Event::Eof => return Err(StanzaError::MissingElement("list")),
+                Event::End(e) if local_name(e.name()) == b"devices" => break,
+                Event::Eof => return Err(StanzaError::MissingElement("devices")),
                 _ => {}
             }
         }
@@ -540,7 +553,7 @@ impl DeviceList {
         let mut buf = Vec::new();
         let mut w = Writer::new(Cursor::new(&mut buf));
 
-        let mut list_el = BytesStart::new("list");
+        let mut list_el = BytesStart::new("devices");
         list_el.push_attribute(("xmlns", NS));
         w.write_event(Event::Start(list_el.borrow()))?;
 
@@ -551,10 +564,14 @@ impl DeviceList {
             if let Some(label) = &d.label {
                 dev.push_attribute(("label", label.as_str()));
             }
+            let sig_b64 = d.labelsig.as_ref().map(|s| b64_encode(s));
+            if let Some(sig) = &sig_b64 {
+                dev.push_attribute(("labelsig", sig.as_str()));
+            }
             w.write_event(Event::Empty(dev.borrow()))?;
         }
 
-        w.write_event(Event::End(BytesEnd::new("list")))?;
+        w.write_event(Event::End(BytesEnd::new("devices")))?;
         Ok(String::from_utf8(buf).expect("utf-8"))
     }
 }
