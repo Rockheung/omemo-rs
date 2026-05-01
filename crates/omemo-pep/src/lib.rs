@@ -25,6 +25,7 @@ pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event};
 
 mod message;
 mod pep;
+mod wire;
 
 pub use message::{
     bootstrap_active_session_from_bundle, decrypt_inbound_kex, decrypt_message, encrypt_message,
@@ -34,6 +35,7 @@ pub use pep::{
     fetch_bundle, fetch_device_list, publish_bundle, publish_device_list, PepError, BUNDLES_NODE,
     DEVICES_NODE, ITEM_ID_CURRENT,
 };
+pub use wire::{send_encrypted, wait_for_encrypted, WireError};
 
 /// Build a `tokio-xmpp` client that connects in cleartext to a fixed
 /// `host:port` socket address.

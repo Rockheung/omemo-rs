@@ -18,17 +18,18 @@ Ordering reflects dependencies — do top to bottom.
 | 1.4 — `omemo-twomemo` | ✅ | `twomemo` (1 KEX + 3 messages, byte-equal protobuf) |
 | 2 — `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
 | 3 — `omemo-session` | ✅ | persist/restart 1:1 round-trip |
-| 4 — `omemo-pep` | 🚧 | Prosody integration test (auth ✅; PEP ⏳) |
+| 4 — `omemo-pep` | ✅ | alice ↔ bob 3-message exchange over real Prosody (`gate.rs`) |
 | 5 — Group OMEMO | ⏳ | 3 omemo-rs + 1 Conversations in MUC |
 | 6 — Real-client interop | ⏳ | Conversations + Dino DM/MUC |
 
-**Stages 1–3 complete; Stage 4 in flight.** Transport layer (tokio-xmpp 5
-plaintext connect to local Prosody 13) verified end-to-end —
-`alice_authenticates_and_binds` passes. ADR-007 captures the MPL-2.0
-acceptance for the xmpp-rs crate family. Cross-cutting (README, CI,
-SCE envelope) all in. `cargo fmt --all --check`, `cargo clippy
---workspace --all-targets -D warnings`, `cargo deny check licenses`
-all clean.
+**Stages 1–4 complete.** alice and bob exchange three OMEMO 2 messages
+end-to-end across a real Prosody — KEX bootstrap on M0, ratchet step on
+M1/M2, byte-equal plaintext recovery on the receiving side. Crypto
+layer is byte-equal with the Syndace Python reference (replay strategy,
+ADR-004); transport layer is MPL-2.0 xmpp-rs (ADR-007). 51 self-
+contained tests + 4 Prosody-backed integration tests all green.
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+-D warnings`, `cargo deny check licenses` all clean.
 
 ---
 
@@ -225,8 +226,18 @@ test, all green together.
 - [ ] StartTLS path (production): bring back `tokio-xmpp/starttls` +
       `aws_lc_rs` + `rustls-native-certs` features, switch from
       `connect_plaintext` to `Client::new` for non-localhost JIDs.
-- [ ] **Gate**: local Prosody integration test, two `omemo-pep` instances
-      exchange 3 messages over real XMPP.
+      Required for Stage 6 (real Conversations / Dino over the public
+      network); not needed for the localhost gate.
+- [ ] omemo-session SQLite persistence integration: today the gate
+      test holds `(IK, SPK, OPK ids, X3dhState, TwomemoSession)` in
+      test-local variables. Production callers should round-trip these
+      through `omemo-session`'s store via `TwomemoSessionSnapshot::
+      {encode,decode}` and `consume_opk()`. Wire up at the call sites
+      we leave as test-glue today (the spk_pub_by_id / opk_pub_by_id
+      closures pass straight through).
+- [x] **Gate**: local Prosody integration test, two `omemo-pep`
+      instances exchange 3 messages over real XMPP. ✅
+      `omemo-pep::tests::gate::alice_to_bob_three_messages_over_real_xmpp`
 
 ## Stage 5 — Group OMEMO (MUC)
 
