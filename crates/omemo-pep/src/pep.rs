@@ -1,9 +1,10 @@
 //! PEP (XEP-0163) publish/fetch for OMEMO 2 device-list and bundle nodes.
 //!
 //! XEP-0384 v0.9 §5.3 requires every device to publish itself onto the
-//! `urn:xmpp:omemo:2:devices` PEP node so peers can discover it. This
-//! module gives the thin `publish_device_list` / `fetch_device_list`
-//! helpers that wrap the iq + pubsub plumbing.
+//! `urn:xmpp:omemo:2:devices` PEP node so peers can discover it, and
+//! to publish its key bundle onto `urn:xmpp:omemo:2:bundles` (one item
+//! per device, item id = device id). This module gives the thin
+//! `publish_*` / `fetch_*` helpers that wrap the iq + pubsub plumbing.
 
 use futures_util::StreamExt;
 use jid::{BareJid, Jid};
@@ -14,14 +15,17 @@ use xmpp_parsers::pubsub::pubsub::{Item, Items, PubSub, Publish};
 use xmpp_parsers::pubsub::{ItemId, NodeName};
 use xmpp_parsers::stanza_error::StanzaError;
 
-use omemo_stanza::DeviceList;
+use omemo_stanza::{Bundle, DeviceList};
 use tokio_xmpp::{Client, IqFailure, IqRequest, IqResponse, IqResponseToken};
 
-/// PEP node holding the OMEMO 2 device list.
+/// PEP node holding the OMEMO 2 device list (XEP-0384 §5.3.1).
 pub const DEVICES_NODE: &str = "urn:xmpp:omemo:2:devices";
 /// PEP item id for the (single) device-list payload.
 pub const ITEM_ID_CURRENT: &str = "current";
-/// XML namespace of the OMEMO 2 device-list payload elements.
+/// PEP node holding OMEMO 2 bundles (XEP-0384 §5.3.2). One item per
+/// device, with item id equal to the device id (as a decimal string).
+pub const BUNDLES_NODE: &str = "urn:xmpp:omemo:2:bundles";
+/// XML namespace of the OMEMO 2 device-list and bundle payloads.
 const OMEMO2_NS: &str = "urn:xmpp:omemo:2";
 
 #[derive(Debug, Error)]
@@ -38,6 +42,8 @@ pub enum PepError {
     UnexpectedResponse,
     #[error("device list payload missing in pubsub item")]
     NoDeviceList,
+    #[error("bundle payload missing in pubsub item")]
+    NoBundle,
     #[error("could not parse pubsub response: {0}")]
     Parse(String),
     #[error("stream ended while awaiting iq response")]
@@ -158,10 +164,102 @@ pub async fn fetch_device_list(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bundles (XEP-0384 §5.3.2)
+// ---------------------------------------------------------------------------
+
+fn bundle_to_element(bundle: &Bundle) -> Result<Element, PepError> {
+    let xml = bundle
+        .encode()
+        .map_err(|e| PepError::Parse(format!("Bundle encode: {e}")))?;
+    Element::from_str(&xml).map_err(|e| PepError::Parse(format!("minidom parse: {e}")))
+}
+
+fn element_to_bundle(elem: &Element) -> Result<Bundle, PepError> {
+    if elem.name() != "bundle" || elem.ns() != OMEMO2_NS {
+        return Err(PepError::Parse(format!(
+            "expected <bundle xmlns='{OMEMO2_NS}'>, got <{}>",
+            elem.name()
+        )));
+    }
+    let xml = String::from(elem);
+    Bundle::parse(&xml).map_err(|e| PepError::Parse(format!("Bundle parse: {e}")))
+}
+
+/// Publish `bundle` onto `urn:xmpp:omemo:2:bundles` with item id =
+/// `device_id` (decimal). XEP-0384 §5.3.2 mandates that the item id
+/// equals the publishing device's id.
+pub async fn publish_bundle(
+    client: &mut Client,
+    device_id: u32,
+    bundle: &Bundle,
+) -> Result<(), PepError> {
+    let payload = bundle_to_element(bundle)?;
+    let pubsub = PubSub::Publish {
+        publish: Publish {
+            node: NodeName(BUNDLES_NODE.to_owned()),
+            items: vec![Item {
+                id: Some(ItemId(device_id.to_string())),
+                publisher: None,
+                payload: Some(payload),
+            }],
+        },
+        publish_options: None,
+    };
+    let token = client
+        .send_iq(None, IqRequest::Set(Element::from(pubsub)))
+        .await;
+    match await_iq_response(client, token).await? {
+        IqResponse::Result(_) => Ok(()),
+        IqResponse::Error(e) => Err(PepError::ServerError(Box::new(e))),
+    }
+}
+
+/// Fetch the bundle for `device_id` from `peer`'s bundles node.
+///
+/// `peer = None` means own account (same Prosody-self-PEP iq-tracker
+/// rationale as [`fetch_device_list`]).
+pub async fn fetch_bundle(
+    client: &mut Client,
+    peer: Option<BareJid>,
+    device_id: u32,
+) -> Result<Bundle, PepError> {
+    let request = PubSub::Items(Items {
+        max_items: None,
+        node: NodeName(BUNDLES_NODE.to_owned()),
+        subid: None,
+        items: vec![Item {
+            id: Some(ItemId(device_id.to_string())),
+            publisher: None,
+            payload: None,
+        }],
+    });
+    let to = peer.map(Jid::from);
+    let token = client
+        .send_iq(to, IqRequest::Get(Element::from(request)))
+        .await;
+    let result_payload = match await_iq_response(client, token).await? {
+        IqResponse::Result(p) => p.ok_or(PepError::NoPayload)?,
+        IqResponse::Error(e) => return Err(PepError::ServerError(Box::new(e))),
+    };
+    let pubsub_response = PubSub::try_from(result_payload)
+        .map_err(|e| PepError::Parse(format!("pubsub response: {e:?}")))?;
+    match pubsub_response {
+        PubSub::Items(items) => {
+            // Server returns a single Item with our requested id; reach
+            // into its payload to get <bundle/>.
+            let item = items.items.first().ok_or(PepError::NoBundle)?;
+            let payload = item.payload.as_ref().ok_or(PepError::NoBundle)?;
+            element_to_bundle(payload)
+        }
+        _ => Err(PepError::UnexpectedResponse),
+    }
+}
+
 #[cfg(test)]
 mod unit {
     use super::*;
-    use omemo_stanza::Device;
+    use omemo_stanza::{Device, PreKey, SignedPreKey};
 
     #[test]
     fn devices_round_trip_via_minidom() {
@@ -183,6 +281,33 @@ mod unit {
         assert_eq!(element.name(), "devices");
         assert_eq!(element.ns(), OMEMO2_NS);
         let parsed = element_to_device_list(&element).expect("parse back");
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn bundle_round_trip_via_minidom() {
+        let original = Bundle {
+            spk: SignedPreKey {
+                id: 1,
+                pub_key: b"spk-pub-bytes".to_vec(),
+            },
+            spks: b"spk-signature-bytes".to_vec(),
+            ik: b"identity-key-bytes".to_vec(),
+            prekeys: vec![
+                PreKey {
+                    id: 1,
+                    pub_key: b"pk1".to_vec(),
+                },
+                PreKey {
+                    id: 2,
+                    pub_key: b"pk2".to_vec(),
+                },
+            ],
+        };
+        let element = bundle_to_element(&original).expect("encode");
+        assert_eq!(element.name(), "bundle");
+        assert_eq!(element.ns(), OMEMO2_NS);
+        let parsed = element_to_bundle(&element).expect("parse back");
         assert_eq!(parsed, original);
     }
 }

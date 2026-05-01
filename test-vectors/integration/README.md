@@ -11,12 +11,14 @@ docker compose up -d
 docker compose ps         # wait for "healthy"
 ```
 
-Pre-registered accounts (config: `prosody.cfg.lua`):
+Pre-registered accounts (registered idempotently by the container
+entrypoint):
 
-| JID                | Password    |
-|--------------------|-------------|
-| `alice@localhost`  | `alicepass` |
-| `bob@localhost`    | `bobpass`   |
+| JID                  | Password       |
+|----------------------|----------------|
+| `alice@localhost`    | `alicepass`    |
+| `bob@localhost`      | `bobpass`      |
+| `charlie@localhost`  | `charliepass`  |
 
 Stop and wipe all session state:
 

@@ -18,11 +18,14 @@
 //! `jid`) per ADR-007. Our own code remains MIT.
 
 pub use jid::BareJid;
-pub use omemo_stanza::{Device, DeviceList};
+pub use omemo_stanza::{Bundle, Device, DeviceList, PreKey, SignedPreKey};
 pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event};
 
 mod pep;
-pub use pep::{fetch_device_list, publish_device_list, PepError, DEVICES_NODE, ITEM_ID_CURRENT};
+pub use pep::{
+    fetch_bundle, fetch_device_list, publish_bundle, publish_device_list, PepError, BUNDLES_NODE,
+    DEVICES_NODE, ITEM_ID_CURRENT,
+};
 
 /// Build a `tokio-xmpp` client that connects in cleartext to a fixed
 /// `host:port` socket address.

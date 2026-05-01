@@ -33,4 +33,4 @@ WORKDIR /var/lib/prosody
 
 # Idempotent user creation, then exec into Prosody. `|| true` because
 # `prosodyctl register` exits non-zero when the user already exists.
-ENTRYPOINT ["sh", "-c", "prosodyctl register alice localhost alicepass || true; prosodyctl register bob localhost bobpass || true; exec prosody"]
+ENTRYPOINT ["sh", "-c", "prosodyctl register alice localhost alicepass || true; prosodyctl register bob localhost bobpass || true; prosodyctl register charlie localhost charliepass || true; exec prosody"]

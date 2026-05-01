@@ -159,8 +159,22 @@ test, all green together.
       `fetch_device_list` doc).
 - [x] Integration test: `bob_publishes_and_fetches_own_device_list`
       round-trips a 3-device list via Prosody.
-- [ ] PEP publish: own bundle (`urn:xmpp:omemo:2:bundles:{deviceId}`)
-- [ ] PEP fetch: peer device list, peer bundle on demand (peer JID variant)
+- [x] PEP publish: own bundle on `urn:xmpp:omemo:2:bundles`, item id =
+      device id — `omemo_pep::publish_bundle`.
+- [x] PEP self-fetch bundle — `omemo_pep::fetch_bundle(client, peer:
+      Option<BareJid>, device_id)` (peer JID variant signed off too —
+      same `Option<BareJid>` shape as device-list fetch).
+- [x] Integration test: `charlie_publishes_and_fetches_own_bundle`
+      round-trips a 3-prekey bundle via Prosody.
+- [ ] Integration: alice fetches bob's published bundle (cross-account
+      peer fetch path) — code already supports it via `Some(peer_jid)`,
+      just needs an integration scenario.
+- [ ] publish-options compliance — XEP-0384 §5.3.2 mandates
+      `pubsub#access_model = open` and `pubsub#max_items = max` on the
+      bundle node so unsubscribed peers can fetch and so old device
+      bundles don't get evicted. Skipped for now (Prosody auto-creates
+      with sane defaults for our self-PEP tests). Required before
+      Conversations/Dino interop in Stage 6.
 - [ ] Stanza interceptor: encrypt outgoing `<message>` if recipient has
       device list
 - [ ] Stanza interceptor: decrypt incoming `<message>` with `<encrypted>`
