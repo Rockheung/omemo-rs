@@ -217,6 +217,11 @@ test, all green together.
 - [ ] SCE envelope wrap/unwrap on the message-body path (already
       implemented in `omemo-stanza::sce` from Stage 4 prep)
 - [ ] Trust-on-first-use device acceptance (configurable)
+- [x] publish-options compliance — both `publish_device_list` and
+      `publish_bundle` now ship a `<publish-options>` data form per
+      XEP-0384 v0.9: `pubsub#access_model = open` on both, plus
+      `pubsub#max_items = max` on the bundle node. Verified green
+      against Prosody 13 (server applies them on auto-create).
 - [ ] StartTLS path (production): bring back `tokio-xmpp/starttls` +
       `aws_lc_rs` + `rustls-native-certs` features, switch from
       `connect_plaintext` to `Client::new` for non-localhost JIDs.

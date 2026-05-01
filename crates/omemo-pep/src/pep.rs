@@ -10,8 +10,9 @@ use futures_util::StreamExt;
 use jid::{BareJid, Jid};
 use std::str::FromStr;
 use thiserror::Error;
+use xmpp_parsers::data_forms::{DataForm, DataFormType, Field};
 use xmpp_parsers::minidom::Element;
-use xmpp_parsers::pubsub::pubsub::{Item, Items, PubSub, Publish};
+use xmpp_parsers::pubsub::pubsub::{Item, Items, PubSub, Publish, PublishOptions};
 use xmpp_parsers::pubsub::{ItemId, NodeName};
 use xmpp_parsers::stanza_error::StanzaError;
 
@@ -27,6 +28,25 @@ pub const ITEM_ID_CURRENT: &str = "current";
 pub const BUNDLES_NODE: &str = "urn:xmpp:omemo:2:bundles";
 /// XML namespace of the OMEMO 2 device-list and bundle payloads.
 const OMEMO2_NS: &str = "urn:xmpp:omemo:2";
+
+/// Build `<publish-options>` carrying a `pubsub#publish-options` data form.
+///
+/// XEP-0384 v0.9 mandates `pubsub#access_model = open` on both PEP nodes
+/// (so peers without presence subscription can fetch — common on first
+/// contact and in MUCs), plus `pubsub#max_items = max` on the bundles
+/// node (so each device's bundle item survives the next device's
+/// publish).
+fn publish_options_form(fields: Vec<(&str, &str)>) -> PublishOptions {
+    let form = DataForm::new(
+        DataFormType::Submit,
+        "http://jabber.org/protocol/pubsub#publish-options",
+        fields
+            .into_iter()
+            .map(|(k, v)| Field::text_single(k, v))
+            .collect(),
+    );
+    PublishOptions { form: Some(form) }
+}
 
 #[derive(Debug, Error)]
 pub enum PepError {
@@ -112,7 +132,7 @@ pub async fn publish_device_list(client: &mut Client, list: &DeviceList) -> Resu
                 payload: Some(payload),
             }],
         },
-        publish_options: None,
+        publish_options: Some(publish_options_form(vec![("pubsub#access_model", "open")])),
     };
     let token = client
         .send_iq(None, IqRequest::Set(Element::from(pubsub)))
@@ -204,7 +224,10 @@ pub async fn publish_bundle(
                 payload: Some(payload),
             }],
         },
-        publish_options: None,
+        publish_options: Some(publish_options_form(vec![
+            ("pubsub#access_model", "open"),
+            ("pubsub#max_items", "max"),
+        ])),
     };
     let token = client
         .send_iq(None, IqRequest::Set(Element::from(pubsub)))
