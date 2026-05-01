@@ -201,9 +201,19 @@ test, all green together.
 - [ ] Stanza interceptor (outbound, with XMPP I/O): wires bundle fetch
       + bootstrap + encrypt + actual `<message>` send via tokio-xmpp
       and persists session into `omemo-session` SQLite store.
-- [ ] Stanza interceptor (inbound): decrypt incoming `<message>` with
-      `<encrypted>` — X3DH passive on KEX flag, advance ratchet
-      otherwise. Higher-level wrapper around the test glue we use today.
+- [x] Inbound API: `omemo_pep::{inbound_kind, decrypt_inbound_kex}`.
+      `inbound_kind(...) -> InboundKind { Kex | Follow }` classifies
+      an `<encrypted>` for our (jid, device_id);
+      `decrypt_inbound_kex(...)` runs parse_key_exchange → X3DH passive
+      → create_passive → decrypt → open_payload in one step, returning
+      `(TwomemoSession, plaintext, consumed_opk_id)`. Caller-supplied
+      `spk_pub_by_id` / `opk_pub_by_id` closures decouple the function
+      from the SQLite store. `decrypt_message` remains the kex=false
+      path.
+- [ ] Stanza interceptor (inbound, with XMPP I/O): wires `inbound_kind`
+      dispatch + `decrypt_inbound_kex` + `decrypt_message` into the
+      tokio-xmpp `<message>` event loop, persists the new session and
+      the consumed-OPK flag through `omemo-session`.
 - [ ] SCE envelope wrap/unwrap on the message-body path (already
       implemented in `omemo-stanza::sce` from Stage 4 prep)
 - [ ] Trust-on-first-use device acceptance (configurable)

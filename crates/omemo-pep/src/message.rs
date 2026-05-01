@@ -23,9 +23,12 @@
 use omemo_doubleratchet::dh_ratchet::DhPrivProvider;
 use omemo_stanza::{Encrypted, Key, KeysGroup};
 use omemo_twomemo::{
-    build_key_exchange, open_payload, seal_payload, SceError, TwomemoError, TwomemoSession,
+    build_key_exchange, open_payload, parse_key_exchange, peek_dh_pub, seal_payload, SceError,
+    TwomemoError, TwomemoSession,
 };
-use omemo_x3dh::{get_shared_secret_active, X3dhError, X3dhState};
+use omemo_x3dh::{
+    get_shared_secret_active, get_shared_secret_passive, Header as X3dhHeader, X3dhError, X3dhState,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -54,6 +57,12 @@ pub enum MessageError {
     },
     #[error("OPK id {0} not present in peer bundle")]
     OpkNotFound(u32),
+    #[error("inbound key entry was kex=false; route to decrypt_message")]
+    KexExpected,
+    #[error("our SPK id {0} not found in caller's lookup")]
+    SpkIdNotFound(u32),
+    #[error("our OPK id {0} not found in caller's lookup")]
+    OpkIdNotFound(u32),
 }
 
 /// Material needed to wrap the very first message of a session in an
@@ -237,27 +246,39 @@ pub fn encrypt_message(
     })
 }
 
-/// Inverse of [`encrypt_message`].
+fn locate_our_key<'a>(
+    encrypted: &'a Encrypted,
+    our_jid: &str,
+    our_device_id: u32,
+) -> Result<&'a Key, MessageError> {
+    let group = encrypted
+        .keys
+        .iter()
+        .find(|g| g.jid == our_jid)
+        .ok_or_else(|| MessageError::OurJidNotInRecipients(our_jid.to_owned()))?;
+    group
+        .keys
+        .iter()
+        .find(|k| k.rid == our_device_id)
+        .ok_or(MessageError::OurDeviceNotInRecipients(our_device_id))
+}
+
+/// Inverse of [`encrypt_message`] for the **follow-up** path
+/// (`<key kex="false">`). Locates our key entry, advances `our_session`
+/// to recover the 48-byte key blob, then uses it to [`open_payload`]
+/// the shared `<payload>`.
 ///
-/// Locates our `<key rid=our_device_id>` inside the `<keys jid=our_jid>`
-/// group, advances `our_session` to recover the 48-byte key blob, then
-/// uses it to [`open_payload`] the shared `<payload>`.
+/// Errors with [`MessageError::KexExpected`] inversely is currently not
+/// handled here — if the entry has `kex=true`, callers should route
+/// to [`decrypt_inbound_kex`] instead. To branch automatically, peek
+/// `locate_our_key(...)` first via [`inbound_kind`].
 pub fn decrypt_message(
     encrypted: &Encrypted,
     our_jid: &str,
     our_device_id: u32,
     our_session: &mut TwomemoSession,
 ) -> Result<Vec<u8>, MessageError> {
-    let group = encrypted
-        .keys
-        .iter()
-        .find(|g| g.jid == our_jid)
-        .ok_or_else(|| MessageError::OurJidNotInRecipients(our_jid.to_owned()))?;
-    let key = group
-        .keys
-        .iter()
-        .find(|k| k.rid == our_device_id)
-        .ok_or(MessageError::OurDeviceNotInRecipients(our_device_id))?;
+    let key = locate_our_key(encrypted, our_jid, our_device_id)?;
     let key_blob = our_session
         .decrypt_message(&key.data)
         .map_err(MessageError::TwomemoDecrypt)?;
@@ -266,6 +287,103 @@ pub fn decrypt_message(
         .as_ref()
         .ok_or(MessageError::PayloadMissing)?;
     Ok(open_payload(payload, &key_blob)?)
+}
+
+/// Whether an inbound `<encrypted>` carries a session-bootstrap KEX or
+/// is a follow-up message on an existing session. The caller dispatches
+/// to [`decrypt_inbound_kex`] vs [`decrypt_message`] accordingly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboundKind {
+    /// `kex=true` — the `<key>` carries an `OMEMOKeyExchange`. Decrypt
+    /// via [`decrypt_inbound_kex`] (which runs X3DH passive and creates
+    /// a fresh `TwomemoSession`).
+    Kex,
+    /// `kex=false` — the `<key>` carries an `OMEMOAuthenticatedMessage`.
+    /// Decrypt via [`decrypt_message`] using the existing session.
+    Follow,
+}
+
+/// Classify the inbound `<encrypted>` for our (`our_jid`, `our_device_id`)
+/// — see [`InboundKind`].
+pub fn inbound_kind(
+    encrypted: &Encrypted,
+    our_jid: &str,
+    our_device_id: u32,
+) -> Result<InboundKind, MessageError> {
+    let key = locate_our_key(encrypted, our_jid, our_device_id)?;
+    Ok(if key.kex {
+        InboundKind::Kex
+    } else {
+        InboundKind::Follow
+    })
+}
+
+/// Bootstrap a passive [`TwomemoSession`] from an inbound `<encrypted>`
+/// whose key entry carries `kex=true`, and decrypt the carried first
+/// message in one step.
+///
+/// Returns `(session, plaintext, consumed_opk_id)`. Callers MUST mark
+/// `consumed_opk_id` as used in their store to enforce the
+/// consume-once invariant XEP-0384 §5.3.2 mandates.
+///
+/// `spk_pub_by_id` and `opk_pub_by_id` are the caller's `omemo-session`
+/// store lookups (or any (`u32` → `[u8; 32]`) mapping). The function
+/// hands the looked-up pub keys to `omemo_x3dh::get_shared_secret_passive`,
+/// which then matches them against `own_state` to find the priv halves
+/// and to run the four DH steps.
+pub fn decrypt_inbound_kex<S, P>(
+    encrypted: &Encrypted,
+    our_jid: &str,
+    our_device_id: u32,
+    own_state: &X3dhState,
+    spk_pub_by_id: S,
+    opk_pub_by_id: P,
+    priv_provider: Box<dyn DhPrivProvider>,
+) -> Result<(TwomemoSession, Vec<u8>, u32), MessageError>
+where
+    S: FnOnce(u32) -> Option<[u8; 32]>,
+    P: FnOnce(u32) -> Option<[u8; 32]>,
+{
+    let key = locate_our_key(encrypted, our_jid, our_device_id)?;
+    if !key.kex {
+        return Err(MessageError::KexExpected);
+    }
+    let (pk_id, spk_id, alice_ik, alice_ek, auth_bytes) =
+        parse_key_exchange(&key.data).map_err(MessageError::Twomemo)?;
+
+    let spk_pub = spk_pub_by_id(spk_id).ok_or(MessageError::SpkIdNotFound(spk_id))?;
+    let opk_pub = opk_pub_by_id(pk_id).ok_or(MessageError::OpkIdNotFound(pk_id))?;
+
+    let header = X3dhHeader {
+        identity_key: alice_ik,
+        ephemeral_key: alice_ek,
+        signed_pre_key: spk_pub,
+        pre_key: Some(opk_pub),
+    };
+    let (out, spk_pair) =
+        get_shared_secret_passive(own_state, &header, &[], true).map_err(MessageError::X3dh)?;
+
+    let alice_first_pub = peek_dh_pub(&auth_bytes).map_err(MessageError::Twomemo)?;
+
+    let mut session = TwomemoSession::create_passive(
+        out.associated_data,
+        out.shared_secret.to_vec(),
+        spk_pair.priv_key,
+        alice_first_pub,
+        priv_provider,
+    )
+    .map_err(MessageError::RatchetEncrypt)?;
+
+    let key_blob = session
+        .decrypt_message(&auth_bytes)
+        .map_err(MessageError::TwomemoDecrypt)?;
+    let payload = encrypted
+        .payload
+        .as_ref()
+        .ok_or(MessageError::PayloadMissing)?;
+    let plaintext = open_payload(payload, &key_blob)?;
+
+    Ok((session, plaintext, pk_id))
 }
 
 #[cfg(test)]
@@ -457,11 +575,7 @@ mod tests {
     // X3DH active bootstrap + KEX round-trip
     // -----------------------------------------------------------------
 
-    use omemo_twomemo::parse_key_exchange;
-    use omemo_x3dh::{
-        get_shared_secret_passive, Header as X3dhHeader, IdentityKeyPair, PreKeyPair,
-        SignedPreKeyPair, X3dhState,
-    };
+    use omemo_x3dh::{IdentityKeyPair, PreKeyPair, SignedPreKeyPair, X3dhState};
 
     fn make_x3dh_state(
         ik_seed: [u8; 32],
@@ -558,47 +672,114 @@ mod tests {
             "kex=true on first message after X3DH active"
         );
 
-        // ---- Bob's side: parse KEX, run X3DH passive, build session, decrypt.
-        let key = &encrypted.keys[0].keys[0];
-        let (got_pk_id, got_spk_id, got_ik, got_ek, auth_bytes) =
-            parse_key_exchange(&key.data).expect("parse_key_exchange");
-        assert_eq!(got_pk_id, chosen_opk_id);
-        assert_eq!(got_spk_id, bob_spk_id);
-        assert_eq!(got_ik, alice_state.identity_key.ed25519_pub());
+        // ---- Bob's side: dispatch via inbound_kind, then decrypt_inbound_kex.
+        assert_eq!(
+            inbound_kind(&encrypted, BOB_JID, BOB_DEV).expect("classify"),
+            InboundKind::Kex
+        );
 
-        // Bob looks up the actual SPK / OPK pub bytes from his state via
-        // the IDs the receiver carried. (In production these IDs index
-        // into the SQLite store; here we just hand-thread them from the
-        // arrays we constructed above.)
-        let bob_spk_pub = bob_state.signed_pre_key.pub_key();
-        let bob_opk_pub = bob_state.pre_keys[0].pub_key();
-        let header = X3dhHeader {
-            identity_key: got_ik,
-            ephemeral_key: got_ek,
-            signed_pre_key: bob_spk_pub,
-            pre_key: Some(bob_opk_pub),
-        };
-        let (bob_x3dh_out, _spk) =
-            get_shared_secret_passive(&bob_state, &header, &[], true).expect("bob X3DH passive");
-
-        let alice_first_pub = peek_dh_pub(&auth_bytes).expect("peek dh");
         let bob_dr_privs: Vec<[u8; 32]> = (1..=4).map(|i| [(0x70 + i) as u8; 32]).collect();
-        let mut bob_session = TwomemoSession::create_passive(
-            bob_x3dh_out.associated_data,
-            bob_x3dh_out.shared_secret.to_vec(),
-            bob_state.signed_pre_key.priv_key,
-            alice_first_pub,
+        // Caller-supplied id→pub_key lookups (production: omemo-session
+        // SQLite store; here: closures over the arrays we set up above).
+        let spk_pub_lookup =
+            |id: u32| (id == bob_spk_id).then(|| bob_state.signed_pre_key.pub_key());
+        let opk_pub_lookup = |id: u32| {
+            bob_opk_ids
+                .iter()
+                .position(|&i| i == id)
+                .map(|idx| bob_state.pre_keys[idx].pub_key())
+        };
+        let (_bob_session, recovered, consumed_opk_id) = decrypt_inbound_kex(
+            &encrypted,
+            BOB_JID,
+            BOB_DEV,
+            &bob_state,
+            spk_pub_lookup,
+            opk_pub_lookup,
             fixed_priv_provider(bob_dr_privs),
         )
-        .expect("bob create_passive");
+        .expect("bob decrypt_inbound_kex");
 
-        // The auth_msg inside the KEX is M0; bob decrypts it directly.
-        let key_blob = bob_session
-            .decrypt_message(&auth_bytes)
-            .expect("bob decrypt M0");
-        let payload = encrypted.payload.as_ref().expect("payload");
-        let recovered = omemo_twomemo::open_payload(payload, &key_blob).expect("open_payload");
         assert_eq!(recovered, plaintext);
+        assert_eq!(
+            consumed_opk_id, chosen_opk_id,
+            "consumed OPK id reported back for caller's store"
+        );
+    }
+
+    #[test]
+    fn decrypt_inbound_kex_rejects_kex_false_entry() {
+        let (mut alice, _bob) = make_session_pair(
+            vec![1; 64],
+            vec![2; 32],
+            [3; 32],
+            (1..=4).map(|i| [i as u8; 32]).collect(),
+            (1..=4).map(|i| [(i + 8) as u8; 32]).collect(),
+        );
+        let mut recipients = [Recipient {
+            jid: "bob@example.org",
+            device_id: 100,
+            session: &mut alice,
+            kex: None,
+        }];
+        let encrypted = encrypt_message(1, &mut recipients, b"data").unwrap();
+        assert_eq!(
+            inbound_kind(&encrypted, "bob@example.org", 100).unwrap(),
+            InboundKind::Follow
+        );
+
+        let bob_state = make_x3dh_state([1; 32], [2; 32], [3; 64], vec![[4; 32]]);
+        let result = decrypt_inbound_kex(
+            &encrypted,
+            "bob@example.org",
+            100,
+            &bob_state,
+            |_| Some([0u8; 32]),
+            |_| Some([0u8; 32]),
+            fixed_priv_provider(vec![[1; 32]]),
+        );
+        match result {
+            Err(MessageError::KexExpected) => {}
+            Err(other) => panic!("expected KexExpected, got {other:?}"),
+            Ok(_) => panic!("expected KexExpected, got Ok"),
+        }
+    }
+
+    #[test]
+    fn decrypt_inbound_kex_rejects_unknown_spk_id() {
+        let alice_state = make_x3dh_state([0xAA; 32], [0x11; 32], [0xCC; 64], vec![[0x21; 32]]);
+        let bob_state = make_x3dh_state([0xBB; 32], [0x22; 32], [0xDD; 64], vec![[0x31; 32]]);
+        let bundle = bundle_stanza_from_state(&bob_state, 1, &[10]);
+        let (mut alice_sess, kex) = bootstrap_active_session_from_bundle(
+            &alice_state,
+            &bundle,
+            10,
+            [0x42; 32],
+            fixed_priv_provider((1..=4).map(|i| [(0x50 + i) as u8; 32]).collect()),
+        )
+        .expect("bootstrap");
+        let mut recipients = [Recipient {
+            jid: "bob@example.org",
+            device_id: 100,
+            session: &mut alice_sess,
+            kex: Some(kex),
+        }];
+        let encrypted = encrypt_message(1, &mut recipients, b"x").unwrap();
+
+        let result = decrypt_inbound_kex(
+            &encrypted,
+            "bob@example.org",
+            100,
+            &bob_state,
+            |_| None, // SPK lookup always fails
+            |_| Some([0u8; 32]),
+            fixed_priv_provider((1..=4).map(|i| [(0x70 + i) as u8; 32]).collect()),
+        );
+        match result {
+            Err(MessageError::SpkIdNotFound(1)) => {}
+            Err(other) => panic!("expected SpkIdNotFound(1), got {other:?}"),
+            Ok(_) => panic!("expected SpkIdNotFound(1), got Ok"),
+        }
     }
 
     #[test]
