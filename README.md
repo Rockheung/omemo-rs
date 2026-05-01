@@ -29,12 +29,14 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 1.4 | `omemo-twomemo` | ✅ | 1 KEX + 3 messages, byte-equal protobuf |
 | 2 | `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
 | 3 | `omemo-session` | ✅ | identity + bundle + persist + restart, no re-keying |
-| 4 | `omemo-pep` | ⏳ | needs Prosody server |
+| 4 | `omemo-pep` | ✅ | alice ↔ bob 3 messages over real Prosody (`gate.rs`) |
 | 5 | Group OMEMO (MUC) | ⏳ | needs Prosody |
 | 6 | Real-client interop | ⏳ | needs Conversations / Dino |
 
-The crypto layer (Stage 1) is byte-equal with the Syndace Python stack on
-every fixture. `cargo test --workspace` passes 28 test result groups.
+The crypto layer is byte-equal with the Syndace Python stack on every
+fixture. `cargo test --workspace` passes 51 unit/replay tests; an
+additional 4 integration tests gate the XMPP path against a local
+Prosody container (run with `-- --ignored`).
 
 ## Workspace layout
 

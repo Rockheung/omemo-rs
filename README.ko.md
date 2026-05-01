@@ -29,12 +29,14 @@ OMEMO 2 만 구현합니다.
 | 1.4 | `omemo-twomemo` | ✅ | 1 KEX + 3 message 의 protobuf byte-equal |
 | 2 | `omemo-stanza` | ✅ | XEP-0384 §3+§5 라운드트립 + 3-수신자 케이스 |
 | 3 | `omemo-session` | ✅ | identity + 번들 + 영속 + 재시작, re-key 없음 |
-| 4 | `omemo-pep` | ⏳ | Prosody 서버 필요 |
+| 4 | `omemo-pep` | ✅ | alice ↔ bob 가 진짜 Prosody 위에서 3 메시지 교환 (`gate.rs`) |
 | 5 | 그룹 OMEMO (MUC) | ⏳ | Prosody 필요 |
 | 6 | 실 클라이언트 상호운용 | ⏳ | Conversations / Dino 필요 |
 
-암호 계층(Stage 1)은 모든 픽스처에서 Syndace Python 스택과 byte-equal로 검증됩니다.
-`cargo test --workspace` 가 28개의 test result group 을 통과합니다.
+암호 계층은 모든 픽스처에서 Syndace Python 스택과 byte-equal 로 검증됩니다.
+`cargo test --workspace` 는 51개의 unit/replay 테스트를 통과하며,
+추가로 4개의 integration 테스트가 로컬 Prosody 컨테이너 위에서 XMPP 경로를
+게이트합니다 (`-- --ignored` 로 실행).
 
 ## 워크스페이스 레이아웃
 

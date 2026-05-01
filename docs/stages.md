@@ -4,12 +4,13 @@ This is the master plan, with definition-of-done criteria ("gates") for each
 stage. A stage is not done until its gate test is green. The TODO.md at the
 repo root is the live, checkbox-style derivative of this document.
 
-**Status (2026-04-29)**: Stages 0, 1.1–1.4, 2, 3 complete — the entire
-crypto layer is byte-equal with the Syndace Python stack, the XEP-0384 v0.9
-stanza encoder/decoder round-trips canonically, and SQLite-backed
-identity/SPK/OPK/session persistence survives DB reopen. Remaining stages
-(4–6) need a real XMPP server (Prosody) and external clients
-(Conversations, Dino) and so cannot be self-contained in this repo's
+**Status (2026-05-01)**: Stages 0–4 complete. Crypto layer is byte-equal
+with the Syndace Python stack, XEP-0384 v0.9 stanzas round-trip
+canonically, SQLite-backed identity/SPK/OPK/session persistence survives
+DB reopen, and two `omemo-pep` instances exchange three OMEMO 2 messages
+over a real Prosody (`tests/gate.rs`). Stages 5 (Group OMEMO/MUC) and 6
+(Conversations + Dino interop) remain — they need either MUC plumbing or
+external clients and so cannot be self-contained in this repo's
 test suite.
 
 ## Stage 0 — Workspace + Test-Vector Pipeline ✅
@@ -178,27 +179,65 @@ SQL files in `crates/omemo-session/migrations/`.
 session round-trip, restarts (re-opens the DB), and continues the session
 from persisted state without re-keying.
 
-## Stage 4 — `omemo-pep` (XMPP integration)
+## Stage 4 — `omemo-pep` (XMPP integration) ✅
 
-**Scope**: Hook into `tokio-xmpp` and implement the PEP (XEP-0163) flows.
+**Scope**: Hook into `tokio-xmpp` (xmpp-rs 5, MPL-2.0 — ADR-007) and
+implement the PEP (XEP-0163) + `<message>` flows. License chain stays
+clean because MPL-2.0 is file-scoped weak copyleft, not infectious.
 
-Outbound:
-* On startup: publish own device list (`urn:xmpp:omemo:2:devices` PEP node).
-* On startup: publish own bundle (`urn:xmpp:omemo:2:bundles:{deviceId}`)
-  with `pubsub#access_model = open` and `pubsub#max_items = 1`.
-* On message send: ensure session for each recipient device, encrypt key
-  per device, wrap in `<encrypted>` stanza, send.
+**Built**:
+* Transport: `connect_plaintext(jid, password, addr)` (localhost
+  integration only); production StartTLS queued.
+* PEP publish/fetch:
+    - `publish_device_list(client, &DeviceList)` — single item id
+      `"current"`, with `<publish-options>` data form setting
+      `pubsub#access_model = open`.
+    - `publish_bundle(client, device_id, &Bundle)` — item id =
+      device_id, with both `access_model = open` and
+      `max_items = max`.
+    - `fetch_device_list(client, peer: Option<BareJid>)` — `peer =
+      None` for self-fetch (works around Prosody self-PEP iq tracker
+      key mismatch when the response carries no `from`).
+    - `fetch_bundle(client, peer: Option<BareJid>, device_id)`.
+* Stanza-level encrypt/decrypt:
+    - `encrypt_message(sid, recipients, plaintext)` produces an
+      `omemo_stanza::Encrypted` (single shared `<payload>`, one
+      `<key rid=>` per recipient device). Each recipient has an
+      `Option<KexCarrier>` — `Some` triggers `kex=true` with
+      `OMEMOKeyExchange` wrapping for the first message after X3DH
+      active; `None` emits `kex=false` with a bare
+      `OMEMOAuthenticatedMessage`.
+    - `decrypt_message` is the kex=false (follow-up) path;
+      `decrypt_inbound_kex` runs X3DH passive + create_passive +
+      decrypt in one call and returns the fresh `TwomemoSession` +
+      plaintext + the consumed OPK id.
+    - `inbound_kind` classifies a received `<encrypted>` so callers
+      dispatch to the right decryptor.
+* X3DH-active bootstrap: `bootstrap_active_session_from_bundle`
+  runs X3DH active against a stanza-level peer Bundle, returns
+  `(TwomemoSession, KexCarrier)`.
+* Wire bridge: `send_encrypted(client, to, &Encrypted)` wraps in
+  `<message type='chat'>` and sends; `wait_for_encrypted(client)`
+  drains the event stream until an OMEMO `<message>` arrives.
 
-Inbound:
-* On `<message>` with `<encrypted xmlns='urn:xmpp:omemo:2'>`: locate our
-  device's encrypted key, decrypt, advance ratchet, deliver plaintext.
-* On PEP `<event>` for a peer's device list: refresh our cache, fetch new
-  bundles as needed.
-* SCE envelope wrapping/unwrapping (XEP-0420).
+**Gate** (passed): `crates/omemo-pep/tests/gate.rs::
+alice_to_bob_three_messages_over_real_xmpp` — alice and bob each
+publish device list + bundle, alice fetches bob's data, bootstraps
+active, sends three `<message>` stanzas (one KEX + two follow-ups),
+bob recovers all three plaintexts byte-equal.
 
-**Gate**: A local Prosody-based integration test (started by the test
-harness via `prosodyctl`) where two `omemo-pep` instances exchange three
-messages.
+**Test infra**: `test-vectors/integration/prosody/` brings up a
+Debian + prosody.im apt-repo Prosody 13 image with three
+pre-registered accounts (alice / bob / charlie). All four
+integration tests (`connect`, two `pep` round-trips, `gate`) run in
+parallel against a single container.
+
+**Out of scope for the gate, queued in TODO.md**:
+* `omemo-session` SQLite persistence — gate keeps state in test-local
+  variables; production wiring of `TwomemoSessionSnapshot::
+  {encode,decode}` + `consume_opk()` is the next housekeeping PR.
+* StartTLS for non-localhost — required for Stage 6 over the public
+  network.
 
 ## Stage 5 — Group OMEMO (MUC)
 

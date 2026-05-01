@@ -138,7 +138,7 @@ test, all green together.
       + restore sessions + send M2 from restored state, decrypted
       successfully without re-keying. OPK consumed flag persisted. ✅
 
-## Stage 4 — `omemo-pep` (XMPP integration)
+## Stage 4 — `omemo-pep` (XMPP integration) ✅
 
 - [x] Pick XMPP library — `tokio-xmpp 5` + `xmpp-parsers 0.22` + `jid 0.12`
       (xmpp-rs family, MPL-2.0 — see ADR-007).
@@ -167,15 +167,12 @@ test, all green together.
       same `Option<BareJid>` shape as device-list fetch).
 - [x] Integration test: `charlie_publishes_and_fetches_own_bundle`
       round-trips a 3-prekey bundle via Prosody.
-- [ ] Integration: alice fetches bob's published bundle (cross-account
-      peer fetch path) — code already supports it via `Some(peer_jid)`,
-      just needs an integration scenario.
-- [ ] publish-options compliance — XEP-0384 §5.3.2 mandates
-      `pubsub#access_model = open` and `pubsub#max_items = max` on the
-      bundle node so unsubscribed peers can fetch and so old device
-      bundles don't get evicted. Skipped for now (Prosody auto-creates
-      with sane defaults for our self-PEP tests). Required before
-      Conversations/Dino interop in Stage 6.
+- [x] Integration: alice fetches bob's published bundle (cross-account
+      peer fetch path) — exercised by the gate test.
+- [x] publish-options compliance — `publish_device_list` ships
+      `pubsub#access_model = open`, `publish_bundle` ships both
+      `access_model = open` and `pubsub#max_items = max`. Verified
+      against Prosody 13 (form is applied on auto-create).
 - [x] SCE payload sym crypto in `omemo-twomemo::seal_payload` /
       `open_payload` (XEP-0384 v0.9 §4.4): random key + HKDF "OMEMO
       Payload" → AES-CBC body + 16-byte HMAC, key||hmac (48B) blob is
@@ -199,9 +196,13 @@ test, all green together.
       bytes. KEX round-trip test: alice bootstraps active, encrypts,
       bob parses_key_exchange + X3DH passive + create_passive +
       decrypts → recovers plaintext byte-equal.
-- [ ] Stanza interceptor (outbound, with XMPP I/O): wires bundle fetch
-      + bootstrap + encrypt + actual `<message>` send via tokio-xmpp
-      and persists session into `omemo-session` SQLite store.
+- [x] Stanza interceptor (outbound, with XMPP I/O): wired through the
+      gate test — `omemo_pep::send_encrypted` wraps an `Encrypted` in
+      a `<message type='chat'>` and sends via tokio-xmpp; the gate
+      flows bundle fetch → `bootstrap_active_session_from_bundle` →
+      `encrypt_message` → `send_encrypted` end-to-end. SQLite session
+      persistence is intentionally separated into the `omemo-session
+      integration` follow-up below.
 - [x] Inbound API: `omemo_pep::{inbound_kind, decrypt_inbound_kex}`.
       `inbound_kind(...) -> InboundKind { Kex | Follow }` classifies
       an `<encrypted>` for our (jid, device_id);
@@ -211,41 +212,112 @@ test, all green together.
       `spk_pub_by_id` / `opk_pub_by_id` closures decouple the function
       from the SQLite store. `decrypt_message` remains the kex=false
       path.
-- [ ] Stanza interceptor (inbound, with XMPP I/O): wires `inbound_kind`
-      dispatch + `decrypt_inbound_kex` + `decrypt_message` into the
-      tokio-xmpp `<message>` event loop, persists the new session and
-      the consumed-OPK flag through `omemo-session`.
-- [ ] SCE envelope wrap/unwrap on the message-body path (already
-      implemented in `omemo-stanza::sce` from Stage 4 prep)
-- [ ] Trust-on-first-use device acceptance (configurable)
+- [x] Stanza interceptor (inbound, with XMPP I/O): wired through the
+      gate test — `omemo_pep::wait_for_encrypted` drains the event
+      stream until an OMEMO `<message>` arrives, then
+      `inbound_kind` + `{decrypt_inbound_kex, decrypt_message}`
+      yield `(TwomemoSession?, plaintext)`. Wiring SQLite session
+      save + OPK consume is the `omemo-session integration` task
+      below.
+- [ ] SCE envelope (XEP-0420) wrap on the message-body path —
+      `omemo-stanza::sce` already builds/parses
+      `<envelope><content/><rpad/><time/><to/><from/></envelope>`,
+      but the gate flow encrypts raw plaintext bytes. Production
+      callers should serialise an SCE envelope into bytes,
+      `seal_payload(envelope_bytes)`, then the receiver
+      `open_payload` + parse the envelope back. Required for proper
+      anti-tampering of the plaintext metadata (`to`/`from`/`time`)
+      per XEP-0384 §4.4.
+- [ ] Trust-on-first-use device acceptance (configurable) —
+      currently the inbound flow trusts whatever device id appears
+      in the `<encrypted>` header. Production needs a policy hook
+      ("first-time devices: accept / reject / prompt") and a
+      `trusted_devices` table in `omemo-session`.
 - [x] publish-options compliance — both `publish_device_list` and
       `publish_bundle` now ship a `<publish-options>` data form per
       XEP-0384 v0.9: `pubsub#access_model = open` on both, plus
       `pubsub#max_items = max` on the bundle node. Verified green
       against Prosody 13 (server applies them on auto-create).
-- [ ] StartTLS path (production): bring back `tokio-xmpp/starttls` +
-      `aws_lc_rs` + `rustls-native-certs` features, switch from
-      `connect_plaintext` to `Client::new` for non-localhost JIDs.
-      Required for Stage 6 (real Conversations / Dino over the public
-      network); not needed for the localhost gate.
-- [ ] omemo-session SQLite persistence integration: today the gate
-      test holds `(IK, SPK, OPK ids, X3dhState, TwomemoSession)` in
-      test-local variables. Production callers should round-trip these
-      through `omemo-session`'s store via `TwomemoSessionSnapshot::
-      {encode,decode}` and `consume_opk()`. Wire up at the call sites
-      we leave as test-glue today (the spk_pub_by_id / opk_pub_by_id
-      closures pass straight through).
 - [x] **Gate**: local Prosody integration test, two `omemo-pep`
       instances exchange 3 messages over real XMPP. ✅
       `omemo-pep::tests::gate::alice_to_bob_three_messages_over_real_xmpp`
 
+## Stage 4 follow-ups (production hardening)
+
+These don't gate Stage 4 — the gate is green — but they're prerequisites
+before Stage 6 (real-client interop) can land. Roughly in dependency
+order.
+
+### 4-FU.1 — `omemo-session` SQLite integration
+
+- [ ] Identity bootstrap helper: load own IK seed + device id + bundle
+      pool from the `omemo-session::Store`, or generate them on first
+      run. Single source of truth for `X3dhState` + the per-id SPK/OPK
+      lookups our `decrypt_inbound_kex` callbacks need.
+- [ ] Outbound: after `bootstrap_active_session_from_bundle`, persist
+      the new `TwomemoSession` via
+      `TwomemoSessionSnapshot::{encode,save_session}`. After every
+      `encrypt_message`, save the advanced session state.
+- [ ] Inbound: after `decrypt_inbound_kex`, persist the new session
+      and call `Store::consume_opk(consumed_opk_id)` so the OPK
+      cannot be reused. After every `decrypt_message`, save the
+      advanced session state.
+- [ ] Refactor `tests/gate.rs` to use the integrated path so the
+      same flow round-trips through SQLite and survives a `Store`
+      reopen.
+
+### 4-FU.2 — StartTLS for production network use
+
+- [ ] Re-enable `tokio-xmpp/starttls` + `aws_lc_rs` +
+      `rustls-native-certs` features (turned off when we picked
+      `insecure-tcp` for the localhost integration tests).
+- [ ] Add `connect_starttls(jid, password)` — `Client::new` does SRV
+      + StartTLS + native cert validation. Keep `connect_plaintext`
+      for localhost integration tests.
+- [ ] Document in `omemo-pep` README which entry point to use when.
+
+### 4-FU.3 — XEP-0420 SCE envelope on the message body
+
+- [ ] Wrap outbound plaintext in `omemo-stanza::sce::Envelope` with
+      `<to>`, `<from>`, `<time>`, `<rpad>` (random 0–200 bytes) and
+      then `seal_payload(envelope.encode())`.
+- [ ] Inbound: `open_payload` → parse envelope → verify `to` matches
+      our JID, drop messages with mismatched `to`/`from` per
+      XEP-0384 §4.5 (anti-tampering).
+- [ ] Update gate test to round-trip the envelope.
+
+### 4-FU.4 — TOFU device-trust policy
+
+- [ ] `omemo-session`: add `trusted_devices` table (`(jid, device_id,
+      ik_pub, trust_state, first_seen_at)`).
+- [ ] Inbound: on first `<encrypted>` from a previously unseen
+      `(jid, device_id)`, consult policy hook (`PolicyTofu`,
+      `PolicyManual`, ...).
+- [ ] Outbound: warn / refuse if any peer device is in `Untrusted`
+      state.
+
 ## Stage 5 — Group OMEMO (MUC)
 
-- [ ] MUC occupant tracking (presence stanza parsing, real-JID resolution)
-- [ ] Per-occupant device-list cache
-- [ ] Bundle-fetch backpressure / parallelism control on join
-- [ ] **Gate**: 3 omemo-rs clients + 1 Conversations client in a MUC,
-      all four exchange and decrypt messages.
+Algorithmically the same as Stage 4 (one shared `<payload>`, one
+`<key rid=>` per recipient device, just across more recipient JIDs).
+The new work is XMPP-side: occupant discovery, real-JID mapping, and
+bundle-fetch concurrency on join.
+
+- [ ] MUC join + occupant tracking (XEP-0045 presence parsing,
+      real-JID resolution from `<x xmlns='http://jabber.org/protocol/
+      muc#user'><item jid='real@bare/res'/></x>`).
+- [ ] Per-occupant device-list cache, refreshed on PEP `<event>` for
+      each room member.
+- [ ] Bundle-fetch backpressure on join — limit concurrent
+      `fetch_bundle` to N (avoid stampeding a 50-occupant room).
+- [ ] Outbound MUC message: encrypt for *every* device of *every*
+      occupant (excluding our own); use `groupchat` message type,
+      `to=room@conf` bare.
+- [ ] Inbound MUC message: dispatch via `inbound_kind` exactly as
+      Stage 4; the only new thing is the `from` JID is the room +
+      occupant nick, real JID looked up via the cache.
+- [ ] **Gate**: 3 omemo-rs clients + 1 Conversations client in a
+      MUC, all four exchange and decrypt messages.
 
 ## Stage 6 — Real-Client Interop
 
