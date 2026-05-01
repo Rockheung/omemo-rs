@@ -18,7 +18,8 @@ base64 = { workspace = true }
 omemo-stanza = { path = "../omemo-stanza" }
 omemo-twomemo = { path = "../omemo-twomemo" }
 omemo-doubleratchet = { path = "../omemo-doubleratchet" }
+omemo-x3dh = { path = "../omemo-x3dh" }
+omemo-xeddsa = { path = "../omemo-xeddsa" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-omemo-xeddsa = { path = "../omemo-xeddsa" }

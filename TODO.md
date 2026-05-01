@@ -188,12 +188,22 @@ test, all green together.
       alice→{bob_dev1, bob_dev2} multi-device round-trip, wrong-jid /
       wrong-device negative tests. `kex=false` for now (KEX wrapping
       lands with the X3DH-aware outbound interceptor).
-- [ ] Stanza interceptor (outbound): encrypt outgoing `<message>` if
-      recipient has device list — wires bundle fetch + X3DH active +
-      encrypt + send.
+- [x] X3DH active half of session bootstrap —
+      `omemo_pep::bootstrap_active_session_from_bundle` consumes a
+      stanza-level `Bundle`, picks an OPK id, runs X3DH active, and
+      hands back a fresh `TwomemoSession` plus a `KexCarrier` (pk_id,
+      spk_id, ik, ek) for wrapping the first outbound message.
+- [x] `Recipient::kex: Option<KexCarrier>` triggers
+      `OMEMOKeyExchange` wrapping (`kex=true`) on the per-device output
+      bytes. KEX round-trip test: alice bootstraps active, encrypts,
+      bob parses_key_exchange + X3DH passive + create_passive +
+      decrypts → recovers plaintext byte-equal.
+- [ ] Stanza interceptor (outbound, with XMPP I/O): wires bundle fetch
+      + bootstrap + encrypt + actual `<message>` send via tokio-xmpp
+      and persists session into `omemo-session` SQLite store.
 - [ ] Stanza interceptor (inbound): decrypt incoming `<message>` with
       `<encrypted>` — X3DH passive on KEX flag, advance ratchet
-      otherwise.
+      otherwise. Higher-level wrapper around the test glue we use today.
 - [ ] SCE envelope wrap/unwrap on the message-body path (already
       implemented in `omemo-stanza::sce` from Stage 4 prep)
 - [ ] Trust-on-first-use device acceptance (configurable)

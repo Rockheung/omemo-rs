@@ -1004,6 +1004,7 @@ dependencies = [
  "omemo-doubleratchet",
  "omemo-stanza",
  "omemo-twomemo",
+ "omemo-x3dh",
  "omemo-xeddsa",
  "thiserror 1.0.69",
  "tokio",
