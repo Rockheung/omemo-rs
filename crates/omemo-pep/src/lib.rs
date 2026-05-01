@@ -25,6 +25,7 @@ pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event};
 
 mod message;
 mod pep;
+mod store;
 mod wire;
 
 pub use message::{
@@ -35,13 +36,21 @@ pub use pep::{
     fetch_bundle, fetch_device_list, publish_bundle, publish_device_list, PepError, BUNDLES_NODE,
     DEVICES_NODE, ITEM_ID_CURRENT,
 };
+pub use store::{
+    bootstrap_and_save_active, bundle_from_store, encrypt_to_peer, install_identity,
+    receive_first_message, receive_followup, x3dh_state_from_store, IdentitySeed, InboundEnvelope,
+    StoreFlowError, TrustPolicy,
+};
 pub use wire::{send_encrypted, wait_for_encrypted, WireError};
+
+pub use omemo_session::{OwnIdentity, SessionStoreError, Store, TrustState, TrustedDevice};
 
 /// Build a `tokio-xmpp` client that connects in cleartext to a fixed
 /// `host:port` socket address.
 ///
 /// **Localhost integration tests only.** Anything reachable over the
-/// public network MUST use [`tokio_xmpp::Client::new`] (StartTLS + SRV).
+/// public network MUST use [`connect_starttls`] (or compose
+/// [`tokio_xmpp::Client::new_starttls`] yourself).
 ///
 /// `addr` is parsed by `tokio-xmpp` as a `SocketAddr`-style string,
 /// e.g. `"127.0.0.1:5222"`.
@@ -52,4 +61,28 @@ pub fn connect_plaintext(
 ) -> Client {
     let dns_config = DnsConfig::Addr { addr: addr.into() };
     Client::new_plaintext(jid, password, dns_config, Timeouts::default())
+}
+
+/// Build a production `tokio-xmpp` client. Resolves the server via
+/// `_xmpp-client._tcp.<domain>` SRV (with the standard fallback to
+/// `<domain>:5222`), upgrades the cleartext stream via XMPP StartTLS
+/// (RFC 6120 §5), and validates the server certificate against the OS
+/// trust roots (`rustls-native-certs` + `aws_lc_rs`).
+///
+/// Use this for any non-localhost deployment.
+pub fn connect_starttls(jid: BareJid, password: impl Into<String>) -> Client {
+    Client::new(jid, password)
+}
+
+/// StartTLS variant that bypasses SRV and connects to an explicit
+/// `host:port`. Useful for staging deployments that do not publish
+/// SRV records and for self-hosted servers behind a load balancer.
+/// Production should prefer [`connect_starttls`].
+pub fn connect_starttls_addr(
+    jid: BareJid,
+    password: impl Into<String>,
+    addr: impl Into<String>,
+) -> Client {
+    let dns_config = DnsConfig::Addr { addr: addr.into() };
+    Client::new_starttls(jid, password, dns_config, Timeouts::default())
 }

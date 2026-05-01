@@ -7,6 +7,86 @@ them and add the successor below.
 
 ---
 
+## ADR-008 — StartTLS via `aws-lc-rs` + `rustls-native-certs` (and the ISC / hickory advisory carve-outs)
+
+**Date**: 2026-05-01
+**Status**: accepted
+**Stage**: 4 (follow-up 4-FU.2)
+
+### Problem
+
+Stage 4 originally compiled `tokio-xmpp` with `default-features = false,
+features = ["insecure-tcp"]` so the localhost integration tests could
+hit Prosody on `127.0.0.1:5222` without a TLS handshake. That is fine
+for tests but blocks the actual production goal — talking to public
+XMPP servers from the bot orchestrator. Stage 6 (Conversations / Dino
+interop) needs StartTLS.
+
+### Decision
+
+Enable `tokio-xmpp` features `starttls`, `aws_lc_rs`, and
+`rustls-native-certs` *in addition to* `insecure-tcp`, expose
+`connect_starttls(jid, password)` and `connect_starttls_addr(jid,
+password, "host:port")` from `omemo-pep`, and keep `connect_plaintext`
+strictly for localhost integration. Production callers MUST use a
+StartTLS entry point.
+
+`aws-lc-rs` is the rustls backend rather than `ring`. AWS-LC-RS is
+FIPS-aligned, actively maintained by AWS, and ships pure-Rust bindings
+plus a vendored C library; it has wider downstream traction in
+2025-2026 than ring does. We do not need FIPS, but we do prefer the
+actively-maintained branch over the older one.
+
+### License chain implications
+
+The new transitive deps required two `cargo deny` allow-list
+additions:
+
+* **ISC** — `rustls`, `rustls-webpki`, `untrusted`, and several
+  `aws-lc-rs` sub-crates ship under the ISC license. ISC is OSI-/FSF-
+  approved and functionally equivalent to BSD-2-Clause. No copyleft
+  implications.
+* **MIT-0** — one of `aws-lc-sys`'s embedded source packages is MIT-0
+  (MIT without the attribution clause). Strictly more permissive than
+  MIT.
+
+Both sit comfortably alongside our existing MIT/Apache-2.0/BSD/
+Unicode-3.0/MPL-2.0 set. No new copyleft surface.
+
+### Advisory carve-outs
+
+`tokio-xmpp` 5 transitively pins `hickory-proto = 0.25.x`, which has
+two open RUSTSEC advisories:
+
+* **RUSTSEC-2026-0118** — `DnssecDnsHandle` NSEC3 closest-encloser
+  validation. We do not use DNSSEC anywhere; tokio-xmpp uses
+  `hickory-resolver` for plain SRV lookups (`_xmpp-client._tcp`).
+* **RUSTSEC-2026-0119** — DoS amplification in `BinEncoder` during
+  DNS *message encoding* (linear scan over compression labels).
+  Affects servers and encoders. We are a client that decodes SRV
+  responses; we never encode arbitrary attacker-influenced messages.
+
+Both advisories are ignored in `deny.toml` with documented re-
+evaluation triggers (when `tokio-xmpp` releases against
+`hickory-proto` 0.26.x, drop the ignores).
+
+### Alternatives considered
+
+* **Stay on `ring`**: smaller dep tree but ring's release cadence
+  has slowed; aws-lc-rs is the better long-term bet and is already
+  the rustls default in 2025+.
+* **`webpki-roots` instead of `rustls-native-certs`**: ships its own
+  Mozilla-derived root set, no OS dependency. We picked native-certs
+  because corporate / enterprise XMPP deployments often use private CAs
+  in the OS trust store, and the bot orchestrator is expected to
+  connect to such environments.
+* **`native-tls`** (Mozilla's wrapper around system TLS — OpenSSL on
+  Linux, SChannel on Windows): would re-introduce `openssl-sys`,
+  which we explicitly ban in `deny.toml` to keep the link surface
+  RustCrypto-pure.
+
+---
+
 ## ADR-007 — Accept MPL-2.0 for `tokio-xmpp` / `xmpp-parsers` / `jid`
 
 **Date**: 2026-05-01

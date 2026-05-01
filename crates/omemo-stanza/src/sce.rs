@@ -152,6 +152,30 @@ impl SceEnvelope {
         })
     }
 
+    /// Convenience: extract the text content of `<body[ xmlns]>TEXT</body>`
+    /// from `self.content`, returning `Ok(None)` if there is no `<body>`
+    /// child. Used by chat-style OMEMO 2 callers — anything beyond a
+    /// single `<body>` inside `<content>` is not interpreted.
+    pub fn body_text(&self) -> Result<Option<String>, StanzaError> {
+        let mut reader = Reader::from_str(&self.content);
+        reader.config_mut().trim_text(false);
+        loop {
+            match reader.read_event()? {
+                Event::Start(s) if local_name(s.name()) == b"body" => {
+                    // read_text returns the literal contents up to the end
+                    // tag; quick-xml has unescaped them already.
+                    let txt = reader.read_text(s.name())?;
+                    return Ok(Some(txt.into_owned()));
+                }
+                Event::Empty(s) if local_name(s.name()) == b"body" => {
+                    return Ok(Some(String::new()));
+                }
+                Event::Eof => return Ok(None),
+                _ => {}
+            }
+        }
+    }
+
     /// Canonical encoder. Element order: `<content>`, `<rpad>`, `<time>`,
     /// `<to>`, `<from>`. Empty `rpad` is emitted as `<rpad/>`. `time`,
     /// `to`, `from` are always self-closing.

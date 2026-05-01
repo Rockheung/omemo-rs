@@ -28,6 +28,14 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "Unicode-3.0",
+    # ISC is permissive (functionally equivalent to BSD-2-Clause) and OSI/FSF
+    # approved. Required by rustls / rustls-webpki / untrusted / aws-lc-rs /
+    # aws-lc-sys, all pulled in by tokio-xmpp's StartTLS support (4-FU.2).
+    "ISC",
+    # `aws-lc-sys` ships a multi-license expression that includes MIT-0 for
+    # one of its embedded sources. MIT-0 is MIT without the attribution
+    # clause — strictly more permissive than MIT.
+    "MIT-0",
     # MPL-2.0 is file-scoped weak copyleft — combining with MIT does not
     # infect our own crates. Accepted for the xmpp-rs family (tokio-xmpp,
     # xmpp-parsers, jid, minidom, stringprep). See ADR-007.
@@ -92,4 +100,19 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # `ignore = ["RUSTSEC-YYYY-NNNN"]` when the advisory does not affect our
 # usage; document why in a comment.
 yanked = "warn"
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0118 — hickory-proto NSEC3 closest-encloser DNSSEC
+    # validation issue. We do not use DNSSEC in any path: tokio-xmpp uses
+    # hickory-resolver only for plain SRV lookups (`_xmpp-client._tcp`)
+    # without a `DnssecDnsHandle`. Affected code was moved to `hickory-net`
+    # in 0.26.x, but tokio-xmpp 5 pins 0.25 transitively — we cannot
+    # upgrade without a tokio-xmpp release bump. Re-evaluate when
+    # tokio-xmpp 6 lands.
+    "RUSTSEC-2026-0118",
+    # RUSTSEC-2026-0119 — DoS amplification in hickory-proto's BinEncoder
+    # during DNS *message encoding* (linear scan over compression labels).
+    # Affects servers/encoders. We are a client that decodes SRV
+    # responses; we do not encode arbitrary attacker-influenced messages.
+    # Same upgrade-blocker as above.
+    "RUSTSEC-2026-0119",
+]

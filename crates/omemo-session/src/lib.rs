@@ -54,6 +54,7 @@ pub enum SessionStoreError {
 }
 
 const SCHEMA_V1_SQL: &str = include_str!("../migrations/0001_init.sql");
+const SCHEMA_V2_SQL: &str = include_str!("../migrations/0002_trust.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnIdentity {
@@ -80,6 +81,47 @@ pub struct StoredOpk {
     pub pub_key: [u8; 32],
     pub consumed: bool,
     pub created_at: i64,
+}
+
+/// Per-device trust verdict. Stored in `trusted_devices.trust_state`.
+///
+/// * `Pending` — the device has been seen but no policy decision has
+///   been made yet. Outbound encryption to a Pending device is allowed
+///   (lets messaging work) but UIs should surface the prompt.
+/// * `Trusted` — explicitly approved, either by the user or by an
+///   auto-approve TOFU policy on first sight.
+/// * `Untrusted` — explicitly rejected. Outbound MUST refuse;
+///   inbound from this device should be dropped or flagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustState {
+    Pending = 0,
+    Trusted = 1,
+    Untrusted = 2,
+}
+
+impl TrustState {
+    fn from_i64(v: i64) -> Result<Self, SessionStoreError> {
+        Ok(match v {
+            0 => TrustState::Pending,
+            1 => TrustState::Trusted,
+            2 => TrustState::Untrusted,
+            _ => {
+                return Err(SessionStoreError::Migration {
+                    version: 2,
+                    detail: format!("unknown trust_state value {v}"),
+                })
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedDevice {
+    pub bare_jid: String,
+    pub device_id: u32,
+    pub ik_pub: [u8; 32],
+    pub state: TrustState,
+    pub first_seen_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +213,14 @@ impl Store {
                 .execute_batch(SCHEMA_V1_SQL)
                 .map_err(|e| SessionStoreError::Migration {
                     version: 1,
+                    detail: e.to_string(),
+                })?;
+        }
+        if v < 2 {
+            self.conn
+                .execute_batch(SCHEMA_V2_SQL)
+                .map_err(|e| SessionStoreError::Migration {
+                    version: 2,
                     detail: e.to_string(),
                 })?;
         }
@@ -438,6 +488,110 @@ impl Store {
         Ok(rows)
     }
 
+    // ---- trust (TOFU) -----------------------------------------------------
+
+    /// Atomically record `(jid, device_id)` if absent, returning the
+    /// resulting [`TrustedDevice`] row.
+    ///
+    /// On first sight, the row is inserted with `default_state` (TOFU
+    /// callers pass `Trusted`; Manual callers pass `Pending`) and
+    /// `first_seen_at = now`. On subsequent calls, the existing row is
+    /// returned unchanged — including its IK and trust state — so the
+    /// caller can detect IK drift (a different IK on a previously-seen
+    /// `(jid, device_id)` is a critical security signal: the peer's
+    /// device key changed without explicit re-trust).
+    pub fn record_first_seen(
+        &mut self,
+        bare_jid: &str,
+        device_id: u32,
+        ik_pub: &[u8; 32],
+        default_state: TrustState,
+    ) -> Result<TrustedDevice, SessionStoreError> {
+        let now = now_secs();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO trusted_devices
+                 (bare_jid, device_id, ik_pub, trust_state, first_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![bare_jid, device_id, &ik_pub[..], default_state as i64, now,],
+        )?;
+        let row = tx.query_row(
+            "SELECT bare_jid, device_id, ik_pub, trust_state, first_seen_at
+               FROM trusted_devices WHERE bare_jid = ?1 AND device_id = ?2",
+            params![bare_jid, device_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            },
+        )?;
+        tx.commit()?;
+        let (bare_jid, device_id, ik_blob, state_i, first_seen_at) = row;
+        Ok(TrustedDevice {
+            bare_jid,
+            device_id: device_id as u32,
+            ik_pub: array_32(&ik_blob)?,
+            state: TrustState::from_i64(state_i)?,
+            first_seen_at,
+        })
+    }
+
+    /// Look up the recorded trust state for `(jid, device_id)`.
+    pub fn trusted_device(
+        &self,
+        bare_jid: &str,
+        device_id: u32,
+    ) -> Result<Option<TrustedDevice>, SessionStoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT bare_jid, device_id, ik_pub, trust_state, first_seen_at
+                   FROM trusted_devices WHERE bare_jid = ?1 AND device_id = ?2",
+                params![bare_jid, device_id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Vec<u8>>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(match row {
+            Some((bare_jid, device_id, ik_blob, state_i, first_seen_at)) => Some(TrustedDevice {
+                bare_jid,
+                device_id: device_id as u32,
+                ik_pub: array_32(&ik_blob)?,
+                state: TrustState::from_i64(state_i)?,
+                first_seen_at,
+            }),
+            None => None,
+        })
+    }
+
+    /// Explicit policy decision: set the trust state for an already-
+    /// seen device. Returns `Ok(false)` if no row matched (caller never
+    /// recorded the device).
+    pub fn set_trust(
+        &mut self,
+        bare_jid: &str,
+        device_id: u32,
+        state: TrustState,
+    ) -> Result<bool, SessionStoreError> {
+        let n = self.conn.execute(
+            "UPDATE trusted_devices SET trust_state = ?3
+              WHERE bare_jid = ?1 AND device_id = ?2",
+            params![bare_jid, device_id, state as i64],
+        )?;
+        Ok(n > 0)
+    }
+
     // ---- session ----------------------------------------------------------
 
     pub fn save_session(
@@ -488,6 +642,36 @@ impl Store {
             params![bare_jid, device_id],
         )?;
         Ok(n > 0)
+    }
+
+    /// Atomically mark `opk_id` consumed and persist `session` for the
+    /// given peer device. Used by the omemo-pep KEX-inbound flow when the
+    /// caller has already produced the session via `decrypt_inbound_kex`
+    /// (so it cannot reuse [`Self::receive_initial_message`]).
+    pub fn commit_first_inbound(
+        &mut self,
+        peer_jid: &str,
+        peer_device_id: u32,
+        opk_id: u32,
+        session: &TwomemoSession,
+    ) -> Result<(), SessionStoreError> {
+        let blob = session.snapshot().encode();
+        let now = now_secs();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE prekey SET consumed = 1 WHERE id = ?1 AND consumed = 0",
+            params![opk_id],
+        )?;
+        tx.execute(
+            "INSERT INTO session (bare_jid, device_id, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(bare_jid, device_id) DO UPDATE
+                SET state = excluded.state,
+                    updated_at = excluded.updated_at",
+            params![peer_jid, peer_device_id, &blob[..], now],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     // ---- high-level helpers ----------------------------------------------

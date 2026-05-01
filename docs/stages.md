@@ -4,14 +4,20 @@ This is the master plan, with definition-of-done criteria ("gates") for each
 stage. A stage is not done until its gate test is green. The TODO.md at the
 repo root is the live, checkbox-style derivative of this document.
 
-**Status (2026-05-01)**: Stages 0–4 complete. Crypto layer is byte-equal
-with the Syndace Python stack, XEP-0384 v0.9 stanzas round-trip
-canonically, SQLite-backed identity/SPK/OPK/session persistence survives
-DB reopen, and two `omemo-pep` instances exchange three OMEMO 2 messages
-over a real Prosody (`tests/gate.rs`). Stages 5 (Group OMEMO/MUC) and 6
-(Conversations + Dino interop) remain — they need either MUC plumbing or
-external clients and so cannot be self-contained in this repo's
-test suite.
+**Status (2026-05-01)**: Stages 0–4 complete; Stage 4 follow-ups
+4-FU.1 through 4-FU.4 done. Crypto layer is byte-equal with the
+Syndace Python stack, XEP-0384 v0.9 stanzas round-trip canonically,
+SQLite-backed identity/SPK/OPK/session persistence is the system of
+record on both sides of the gate, message bodies are wrapped in
+XEP-0420 SCE envelopes with `<to>`-verification on inbound, peer
+devices are tracked under a TOFU/Manual trust policy with IK-drift
+detection, production deployments ship StartTLS via
+`connect_starttls` (rustls + aws-lc-rs + native cert validation),
+and two `omemo-pep` instances exchange three OMEMO 2 chat messages
+over a real Prosody (`tests/gate.rs`). Stages 5 (Group OMEMO/MUC)
+and 6 (Conversations + Dino interop) remain — they need either MUC
+plumbing or external clients and so cannot be self-contained in this
+repo's test suite.
 
 ## Stage 0 — Workspace + Test-Vector Pipeline ✅
 
@@ -232,12 +238,58 @@ pre-registered accounts (alice / bob / charlie). All four
 integration tests (`connect`, two `pep` round-trips, `gate`) run in
 parallel against a single container.
 
-**Out of scope for the gate, queued in TODO.md**:
-* `omemo-session` SQLite persistence — gate keeps state in test-local
-  variables; production wiring of `TwomemoSessionSnapshot::
-  {encode,decode}` + `consume_opk()` is the next housekeeping PR.
-* StartTLS for non-localhost — required for Stage 6 over the public
-  network.
+**4-FU.1 — `omemo-session` integration** ✅: the gate flows through
+SQLite end-to-end. `omemo-pep::store` adds: `install_identity` (write
+IK seed + SPK + OPKs), `bundle_from_store` / `x3dh_state_from_store`
+(build the published Bundle / in-memory `X3dhState` from store rows),
+`bootstrap_and_save_active` (persist the freshly-bootstrapped session),
+`encrypt_to_peer` (load → step → save), `receive_first_message`
+(look up SPK/OPK pubs by id, run `decrypt_inbound_kex`, then
+`Store::commit_first_inbound` for an atomic OPK consume + session
+persist), `receive_followup` (load → step → save). No `X3dhState` or
+`TwomemoSession` lives in test locals across encrypt/decrypt
+boundaries.
+
+**4-FU.2 — StartTLS for production** ✅: re-enabled
+`tokio-xmpp/{starttls, aws_lc_rs, rustls-native-certs}` features
+alongside `insecure-tcp`. New helpers `connect_starttls(jid, password)`
+(SRV + StartTLS + native cert validation) and
+`connect_starttls_addr(jid, password, "host:port")` (explicit host).
+`connect_plaintext` retained for localhost integration tests, with a
+doc-comment pointer to the production helper. `cargo deny` allow-list
+extended for ISC + MIT-0 (rustls + aws-lc-rs ecosystem); two hickory-
+proto 0.25 advisories ignored with documented rationale (DNSSEC and
+encoder paths we don't use; re-evaluate when tokio-xmpp 6 lands).
+
+**4-FU.3 — XEP-0420 SCE envelope** ✅: outbound `encrypt_to_peer`
+wraps the chat body in `<body xmlns='jabber:client'>...</body>`
+inside an `omemo_stanza::sce::SceEnvelope` (16 fresh random rpad
+bytes, RFC 3339 UTC `<time stamp=>` from a hand-rolled
+Howard-Hinnant civil-from-days), then encrypts the envelope XML.
+Inbound returns `InboundEnvelope { body, from_jid, timestamp }` after
+verifying `<to>` matches our JID — XEP-0384 §4.5's anti-tampering
+gate. `omemo-stanza::sce` already had canonical encode/decode + 6
+round-trip tests; this stage added a `body_text()` helper for chat
+clients.
+
+**4-FU.4 — TOFU device-trust policy** ✅: `omemo-session` schema v2
+adds `trusted_devices(jid, device_id, ik_pub, trust_state,
+first_seen_at)` with `TrustState::{Pending, Trusted, Untrusted}`.
+`record_first_seen` is atomic insert-if-absent and returns the
+existing row so callers can detect IK drift. `omemo-pep::TrustPolicy`
+exposes `Tofu` (auto-Trusted on first sight) vs `Manual` (auto-
+Pending — UI prompts user). Inbound KEX records first-sight IK
+*before* OPK consumption, so a rejected device never burns a one-time
+prekey; on IK mismatch with a previously-recorded `(jid, device_id)`,
+returns `StoreFlowError::IkMismatch`. Outbound and inbound follow-up
+refuse `Untrusted` peers. Three new unit tests + a gate assertion
+that alice's device is `Trusted` in bob's store after KEX.
+
+**Test infra change**: gate now uses dedicated XMPP accounts
+(`gate_a@localhost` / `gate_b@localhost`) so it runs in parallel with
+`tests/connect.rs` (uses `alice`) and `tests/pep.rs` (uses `bob` /
+`charlie`) without same-JID reconnect collisions. Prosody Dockerfile
+registers all five accounts on entrypoint.
 
 ## Stage 5 — Group OMEMO (MUC)
 

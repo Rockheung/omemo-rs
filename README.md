@@ -34,9 +34,15 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 6 | Real-client interop | ⏳ | needs Conversations / Dino |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
-fixture. `cargo test --workspace` passes 51 unit/replay tests; an
+fixture. `cargo test --workspace` passes 57 unit/replay tests; an
 additional 4 integration tests gate the XMPP path against a local
-Prosody container (run with `-- --ignored`).
+Prosody container (run with `-- --ignored`). Stage 4 + follow-ups
+(4-FU.1 to 4-FU.4) are done: the gate flows entirely through
+`omemo-session`'s SQLite store, message bodies are wrapped in
+XEP-0420 SCE envelopes with `<to>`-verification on inbound, every
+peer device is recorded under TOFU or Manual trust policy with IK-drift
+detection, and production deployments ship StartTLS via
+`connect_starttls` (rustls + aws-lc-rs + native cert validation).
 
 ## Workspace layout
 

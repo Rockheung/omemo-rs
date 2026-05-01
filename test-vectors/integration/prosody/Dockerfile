@@ -33,4 +33,12 @@ WORKDIR /var/lib/prosody
 
 # Idempotent user creation, then exec into Prosody. `|| true` because
 # `prosodyctl register` exits non-zero when the user already exists.
-ENTRYPOINT ["sh", "-c", "prosodyctl register alice localhost alicepass || true; prosodyctl register bob localhost bobpass || true; prosodyctl register charlie localhost charliepass || true; exec prosody"]
+#
+# Account allocation (one per test binary, avoids same-JID reconnect
+# flakes when cargo runs binaries in parallel):
+#   alice   — `tests/connect.rs`
+#   bob     — `tests/pep.rs::bob_publishes_...`
+#   charlie — `tests/pep.rs::charlie_publishes_...`
+#   gate_a  — `tests/gate.rs` (active / alice role)
+#   gate_b  — `tests/gate.rs` (passive / bob role)
+ENTRYPOINT ["sh", "-c", "prosodyctl register alice localhost alicepass || true; prosodyctl register bob localhost bobpass || true; prosodyctl register charlie localhost charliepass || true; prosodyctl register gate_a localhost gateapass || true; prosodyctl register gate_b localhost gatebpass || true; exec prosody"]

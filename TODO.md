@@ -22,14 +22,20 @@ Ordering reflects dependencies — do top to bottom.
 | 5 — Group OMEMO | ⏳ | 3 omemo-rs + 1 Conversations in MUC |
 | 6 — Real-client interop | ⏳ | Conversations + Dino DM/MUC |
 
-**Stages 1–4 complete.** alice and bob exchange three OMEMO 2 messages
-end-to-end across a real Prosody — KEX bootstrap on M0, ratchet step on
-M1/M2, byte-equal plaintext recovery on the receiving side. Crypto
-layer is byte-equal with the Syndace Python reference (replay strategy,
-ADR-004); transport layer is MPL-2.0 xmpp-rs (ADR-007). 51 self-
-contained tests + 4 Prosody-backed integration tests all green.
-`cargo fmt --all --check`, `cargo clippy --workspace --all-targets
--D warnings`, `cargo deny check licenses` all clean.
+**Stages 1–4 complete + 4-FU.1 / .2 / .3 / .4.** Two `omemo-pep`
+instances exchange three OMEMO 2 chat messages end-to-end across a
+real Prosody, with `omemo-session`'s SQLite store as the system of
+record on both sides; bodies are wrapped in XEP-0420 SCE envelopes
+(`<to>` is verified on inbound) and the trust layer records every
+peer device on first sight under TOFU or Manual policy with IK-drift
+detection. Production now ships StartTLS via `connect_starttls`
+(rustls + aws-lc-rs + native certs) alongside the `connect_plaintext`
+helper used by localhost integration. Crypto layer is byte-equal with
+the Syndace Python reference (replay strategy, ADR-004); transport
+layer is MPL-2.0 xmpp-rs (ADR-007). 57 self-contained tests + 4
+Prosody-backed integration tests all green. `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -D warnings`, `cargo deny
+check` all clean.
 
 ---
 
@@ -248,53 +254,88 @@ These don't gate Stage 4 — the gate is green — but they're prerequisites
 before Stage 6 (real-client interop) can land. Roughly in dependency
 order.
 
-### 4-FU.1 — `omemo-session` SQLite integration
+### 4-FU.1 — `omemo-session` SQLite integration ✅
 
-- [ ] Identity bootstrap helper: load own IK seed + device id + bundle
-      pool from the `omemo-session::Store`, or generate them on first
-      run. Single source of truth for `X3dhState` + the per-id SPK/OPK
-      lookups our `decrypt_inbound_kex` callbacks need.
-- [ ] Outbound: after `bootstrap_active_session_from_bundle`, persist
-      the new `TwomemoSession` via
-      `TwomemoSessionSnapshot::{encode,save_session}`. After every
-      `encrypt_message`, save the advanced session state.
-- [ ] Inbound: after `decrypt_inbound_kex`, persist the new session
-      and call `Store::consume_opk(consumed_opk_id)` so the OPK
-      cannot be reused. After every `decrypt_message`, save the
-      advanced session state.
-- [ ] Refactor `tests/gate.rs` to use the integrated path so the
-      same flow round-trips through SQLite and survives a `Store`
-      reopen.
+- [x] Identity bootstrap helper (`omemo_pep::install_identity` +
+      `IdentitySeed`) writes own IK seed, device id, SPK, and OPK pool
+      into `omemo-session::Store`. `x3dh_state_from_store` /
+      `bundle_from_store` reconstruct the in-memory `X3dhState` and
+      stanza-level `Bundle` from that single source.
+- [x] Outbound: `bootstrap_and_save_active` runs X3DH active and
+      persists the freshly created session. `encrypt_to_peer` reloads
+      the session via `TwomemoSession::from_snapshot`, runs one
+      ratchet step, and saves the advanced state — no in-memory
+      session state crosses the SQLite boundary.
+- [x] Inbound KEX: `receive_first_message` looks up SPK/OPK pubs by
+      id from the store, runs `decrypt_inbound_kex`, then
+      atomically `consume_opk` + `save_session` via
+      `Store::commit_first_inbound` (single SQLite tx).
+- [x] Inbound follow-up: `receive_followup` loads the session,
+      `decrypt_message`s the SCE envelope, persists the advanced
+      session.
+- [x] `crates/omemo-pep/tests/gate.rs` flows entirely through
+      SQLite — no `X3dhState` or `TwomemoSession` lives in test
+      locals across encrypt/decrypt boundaries.
 
-### 4-FU.2 — StartTLS for production network use
+### 4-FU.2 — StartTLS for production network use ✅
 
-- [ ] Re-enable `tokio-xmpp/starttls` + `aws_lc_rs` +
-      `rustls-native-certs` features (turned off when we picked
-      `insecure-tcp` for the localhost integration tests).
-- [ ] Add `connect_starttls(jid, password)` — `Client::new` does SRV
-      + StartTLS + native cert validation. Keep `connect_plaintext`
-      for localhost integration tests.
-- [ ] Document in `omemo-pep` README which entry point to use when.
+- [x] Re-enabled `tokio-xmpp/starttls` + `aws_lc_rs` +
+      `rustls-native-certs` features (kept `insecure-tcp` alongside
+      so localhost integration tests still work).
+- [x] `connect_starttls(jid, password)` — wraps `Client::new` (SRV
+      + StartTLS + native cert validation). Plus
+      `connect_starttls_addr(jid, password, host_port)` for
+      explicit-host deployments. `connect_plaintext` retained for
+      localhost integration tests with a doc-comment pointer to
+      `connect_starttls`.
+- [x] `cargo deny`: added ISC + MIT-0 to allow-list (rustls + aws-lc-rs
+      ecosystem). Added explicit ignores for RUSTSEC-2026-0118 and
+      RUSTSEC-2026-0119 (hickory-proto 0.25 advisories — both
+      DNSSEC/encoder paths we don't use; documented re-evaluation
+      trigger when tokio-xmpp 6 lands).
 
-### 4-FU.3 — XEP-0420 SCE envelope on the message body
+### 4-FU.3 — XEP-0420 SCE envelope on the message body ✅
 
-- [ ] Wrap outbound plaintext in `omemo-stanza::sce::Envelope` with
-      `<to>`, `<from>`, `<time>`, `<rpad>` (random 0–200 bytes) and
-      then `seal_payload(envelope.encode())`.
-- [ ] Inbound: `open_payload` → parse envelope → verify `to` matches
-      our JID, drop messages with mismatched `to`/`from` per
-      XEP-0384 §4.5 (anti-tampering).
-- [ ] Update gate test to round-trip the envelope.
+- [x] `omemo-stanza::sce::SceEnvelope` already round-trips canonically;
+      added `body_text()` helper to extract the unescaped chat body
+      from `<content>`.
+- [x] Outbound (`omemo-pep::encrypt_to_peer`): wraps `body_text` in
+      `<body xmlns='jabber:client'>...</body>`, builds an envelope with
+      16 fresh random rpad bytes + an RFC 3339 UTC timestamp (hand-rolled
+      Howard-Hinnant civil-from-days, no chrono dep), then encrypts the
+      envelope XML.
+- [x] Inbound (`receive_first_message` / `receive_followup`): parses
+      the envelope, verifies `<to>` matches our JID (XEP-0384 §4.5),
+      returns `InboundEnvelope { body, from_jid, timestamp }`. Drops
+      with `StoreFlowError::WrongRecipient` on mismatch.
+- [x] Gate test exchanges three real chat-text bodies through the
+      envelope path.
 
-### 4-FU.4 — TOFU device-trust policy
+### 4-FU.4 — TOFU device-trust policy ✅
 
-- [ ] `omemo-session`: add `trusted_devices` table (`(jid, device_id,
-      ik_pub, trust_state, first_seen_at)`).
-- [ ] Inbound: on first `<encrypted>` from a previously unseen
-      `(jid, device_id)`, consult policy hook (`PolicyTofu`,
-      `PolicyManual`, ...).
-- [ ] Outbound: warn / refuse if any peer device is in `Untrusted`
-      state.
+- [x] `omemo-session` schema v2: `trusted_devices(jid, device_id,
+      ik_pub, trust_state, first_seen_at)`. New types `TrustState`
+      (`Pending` / `Trusted` / `Untrusted`) and `TrustedDevice`. New
+      methods `record_first_seen` (atomic insert-if-absent, returns
+      the resulting row so callers can detect IK drift), `set_trust`
+      (UPDATE-only — explicit policy decision), `trusted_device`
+      (lookup).
+- [x] `omemo-pep::TrustPolicy` — `Tofu` (auto-Trusted on first sight)
+      vs `Manual` (auto-Pending — the app prompts the user).
+- [x] Inbound KEX (`receive_first_message`): records first-sight IK
+      under the chosen policy *before* OPK consumption, so a
+      rejected device does not burn a one-time prekey. On IK drift,
+      returns `StoreFlowError::IkMismatch` (logs both stored and
+      received fingerprints).
+- [x] Outbound (`encrypt_to_peer`) and inbound follow-up
+      (`receive_followup`) refuse `Untrusted` peers with
+      `StoreFlowError::PeerUntrusted`. Pending and never-seen
+      devices are allowed (KEX is the only path that can record an
+      unseen IK on the wire).
+- [x] Gate test asserts that alice's device is `Trusted` in bob's
+      store after KEX. New unit tests cover Manual policy →
+      Pending → set_trust → success, Untrusted blocking both
+      directions, and IK-drift rejection without OPK consumption.
 
 ## Stage 5 — Group OMEMO (MUC)
 

@@ -14,12 +14,14 @@ xmpp-parsers = { workspace = true }
 jid = { workspace = true }
 futures-util = { workspace = true }
 base64 = { workspace = true }
+rand_core = { workspace = true }
 
 omemo-stanza = { path = "../omemo-stanza" }
 omemo-twomemo = { path = "../omemo-twomemo" }
 omemo-doubleratchet = { path = "../omemo-doubleratchet" }
 omemo-x3dh = { path = "../omemo-x3dh" }
 omemo-xeddsa = { path = "../omemo-xeddsa" }
+omemo-session = { path = "../omemo-session" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
