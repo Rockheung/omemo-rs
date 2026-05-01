@@ -6,6 +6,67 @@ layer of an XMPP-based bot orchestrator (the planned successor to
 intended to be detailed enough that the project can be rebuilt from scratch
 with no other source than these docs.
 
+## Big picture
+
+The codebase is built bottom-up as two stacked layers, with external
+interop on top. The stage plan in `docs/stages.md` follows this layering
+exactly.
+
+**Layer A — Crypto + data structures (Stages 0–3, ✅ complete)**
+
+Pure functions and in-memory state machines. No network, no async, no
+external services. Only compile-time deps are RustCrypto, prost,
+quick-xml, rusqlite.
+
+```
+seed/priv → XEdDSA sign → X3DH agree → DoubleRatchet state
+         → twomemo wire → XML stanza → SQLite persistence
+```
+
+Every step is byte-equal with the Syndace Python reference (replay
+strategy, ADR-004), so Layer A can be checked from a single
+`cargo test --workspace` with no servers or external accounts. License
+chain is MIT throughout (ADR-002).
+
+In principle Layer A is enough to handle OMEMO 2 end-to-end. The only
+thing missing is *who delivers the bytes*.
+
+**Layer B — XMPP transport (Stages 4–5)**
+
+Glues Layer A onto a real XMPP stack (`tokio-xmpp`):
+* Stage 4 — `omemo-pep`: PEP publish/fetch for own device list and
+  bundle, plus stanza interceptors that wrap/unwrap `<encrypted>` on
+  outbound/inbound `<message>`. SCE envelope (XEP-0420) is the plaintext
+  format inside the wrapper (already implemented in `omemo-stanza::sce`
+  as Stage 4 prep).
+* Stage 5 — Group OMEMO: extends Stage 4 to MUC rooms (XEP-0384 §6).
+  Adds occupant-JID resolution and bundle-fetch backpressure.
+
+The cryptographic primitives do not change between Stages 4 and 5;
+what's new is async orchestration and presence/PEP discovery flows.
+
+**Layer C — External-client interop (Stage 6)**
+
+Cross-implementation interop with Conversations (Android) and Dino
+(Linux desktop), DM and MUC. Passing this layer unlocks v0.1.0 and the
+nan-curunir migration off matrix-sdk (the original motivation, §1).
+
+### Why this layering matters
+
+If a bug appears in Stages 4–6, the byte-equal guarantee on Layer A
+means the fault is almost certainly in transport / async timing / PEP
+encoding — not in the crypto. This narrows debugging from "could be
+anywhere in 6 crates" to "the integration glue and the wire framing".
+This is the practical dividend of the replay-based test strategy
+(ADR-004).
+
+| Stage | Layer | Primary risk | Self-contained tests? |
+|---|---|---|---|
+| 0–3 | A | Algorithm porting | yes (`cargo test`) |
+| 4   | B | Async glue, PEP semantics | requires Prosody |
+| 5   | B | Membership, concurrency | requires Prosody |
+| 6   | C | Spec-interpretation drift between clients | requires Conversations + Dino |
+
 ## 1. Why this project exists
 
 `nan-curunir` is a Matrix-based AI bot manager. The team running it found
