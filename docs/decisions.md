@@ -7,6 +7,74 @@ them and add the successor below.
 
 ---
 
+## ADR-007 — Accept MPL-2.0 for `tokio-xmpp` / `xmpp-parsers` / `jid`
+
+**Date**: 2026-05-01
+**Status**: accepted
+**Stage**: 4
+
+### Context
+Stage 4 (`omemo-pep`) needs an XMPP client library. The viable Rust
+options are essentially one — the `xmpp-rs` family
+(`tokio-xmpp`, `xmpp-parsers`, `jid`, `minidom`) — and that family is
+licensed **MPL-2.0**.
+
+Our existing allow-list (`deny.toml`) is MIT, Apache-2.0
+(+ LLVM exception), BSD-2/3-Clause, Unicode-3.0. ADR-002 commits us to
+keeping AGPL/GPL/LGPL out of the runtime graph. MPL-2.0 has not yet been
+considered.
+
+### Decision
+Add MPL-2.0 to the cargo-deny allow-list. Take a runtime dependency on
+`tokio-xmpp 5`, `xmpp-parsers 0.22`, `jid 0.12` (and any MPL-2.0
+transitives the xmpp-rs family pulls in, such as `minidom` and
+`stringprep` — same family, same licence).
+
+### Why MPL-2.0 is acceptable here (and AGPL/GPL/LGPL are not)
+MPL-2.0 is a **file-scoped weak copyleft** licence (Mozilla Public
+License v2, §3.3 "Distribution of a Larger Work"):
+
+* If we *modify* an MPL-2.0 file, our modifications to that file must
+  remain MPL-2.0. We must publish the modified source on request.
+* If we *combine* (link, depend on, vendor) MPL-2.0 code with code under
+  a different licence, the larger work can be distributed under any
+  terms we choose. The MPL files retain MPL; everything else does not.
+
+This is fundamentally different from AGPL/GPL/LGPL, which propagate at
+the *combined-work* level (and AGPL extends that to network use). Our
+MIT crates remain MIT. `nan-curunir`'s MIT licence chain is preserved.
+
+The MPL FAQ confirms this in plain language:
+> "You can combine MPL-licensed code with code under a different licence
+>  (including a proprietary licence) in a Larger Work. The MPL files
+>  remain MPL; the rest of the Larger Work is under whatever licence
+>  you choose."
+
+### Alternatives considered
+* **Roll our own XMPP stack** — XEP-0115/0163/0166/0198/0203/0237/0280/
+  0313/0359/0363/0368/0384/0420/0454 plus core RFC 6120/6121/7622/7395
+  is tens of thousands of lines of stanza handling, stream management,
+  TLS upgrade, SASL, resource binding. Infeasible for one project.
+* **Stay on Matrix** — defeats the purpose of this project (ADR-001).
+* **Find a non-MPL Rust XMPP** — there isn't one in production-ready
+  shape as of 2026-05. Surveyed: `xmpp-rs` (MPL-2.0), `proteus` (Wire,
+  GPL-3.0), `vodozemac` (Apache-2.0, but Olm/Megolm not OMEMO),
+  `libsignal` (AGPL-3.0).
+
+### Consequences
+* If we ever fork `tokio-xmpp` / `xmpp-parsers` / `jid` and modify
+  files in those crates, those forks remain MPL-2.0 and we must publish
+  source per §3.1. Maintaining a fork is therefore a real cost — prefer
+  upstream patches.
+* Our own crate sources continue to be MIT.
+* `cargo deny check` will pick up MPL-2.0 in the runtime graph and
+  pass; no per-crate exception needed.
+* If a future XMPP crate we want is GPL/LGPL/AGPL, this ADR does not
+  cover it — that would need its own decision (and almost certainly a
+  rejection per ADR-002).
+
+---
+
 ## ADR-006 — DH-priv injection via trait, AD encoding via fn pointer
 
 **Date**: 2026-04-29

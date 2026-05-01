@@ -4,7 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "TBD — omemo-pep"
+description = "XEP-0163 PEP integration for OMEMO 2 (device list and bundle publish/fetch over tokio-xmpp)."
 
 [dependencies]
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-xmpp = { workspace = true }
+xmpp-parsers = { workspace = true }
+jid = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

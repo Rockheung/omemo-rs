@@ -7,7 +7,7 @@ Ordering reflects dependencies — do top to bottom.
 
 ---
 
-## Status snapshot (2026-04-29)
+## Status snapshot (2026-05-01)
 
 | Stage | Status | Gate test |
 |---|---|---|
@@ -18,14 +18,17 @@ Ordering reflects dependencies — do top to bottom.
 | 1.4 — `omemo-twomemo` | ✅ | `twomemo` (1 KEX + 3 messages, byte-equal protobuf) |
 | 2 — `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
 | 3 — `omemo-session` | ✅ | persist/restart 1:1 round-trip |
-| 4 — `omemo-pep` | ⏳ | Prosody integration test |
+| 4 — `omemo-pep` | 🚧 | Prosody integration test (auth ✅; PEP ⏳) |
 | 5 — Group OMEMO | ⏳ | 3 omemo-rs + 1 Conversations in MUC |
 | 6 — Real-client interop | ⏳ | Conversations + Dino DM/MUC |
 
-**Stages 1–3 complete.** 29 test result groups green. Cross-cutting:
-README, GitHub Actions CI (fmt + clippy + test + weekly fixture-drift),
-XEP-0420 SCE envelope (Stage 4 prep) all in. `cargo fmt --all --check`
-and `cargo clippy --workspace --all-targets -D warnings` both clean.
+**Stages 1–3 complete; Stage 4 in flight.** Transport layer (tokio-xmpp 5
+plaintext connect to local Prosody 13) verified end-to-end —
+`alice_authenticates_and_binds` passes. ADR-007 captures the MPL-2.0
+acceptance for the xmpp-rs crate family. Cross-cutting (README, CI,
+SCE envelope) all in. `cargo fmt --all --check`, `cargo clippy
+--workspace --all-targets -D warnings`, `cargo deny check licenses`
+all clean.
 
 ---
 
@@ -136,14 +139,26 @@ test, all green together.
 
 ## Stage 4 — `omemo-pep` (XMPP integration)
 
-- [ ] Pick XMPP library (probably `tokio-xmpp` from xmpp-rs)
-- [ ] PEP publish: own device list and own bundle
+- [x] Pick XMPP library — `tokio-xmpp 5` + `xmpp-parsers 0.22` + `jid 0.12`
+      (xmpp-rs family, MPL-2.0 — see ADR-007).
+- [x] Localhost integration infra: `test-vectors/integration/prosody/` —
+      Dockerfile (Debian + prosody.im apt repo, Prosody 13.x) +
+      docker-compose with idempotent `alice`/`bob` registration.
+- [x] First connect+auth integration test (`#[ignore]`'d so default
+      `cargo test` stays self-contained):
+      `omemo-pep::tests::connect::alice_authenticates_and_binds`.
+- [ ] PEP publish: own device list (`urn:xmpp:omemo:2:devices`) and
+      own bundle (`urn:xmpp:omemo:2:bundles:{deviceId}`)
 - [ ] PEP fetch: peer device list, peer bundle on demand
 - [ ] Stanza interceptor: encrypt outgoing `<message>` if recipient has
       device list
 - [ ] Stanza interceptor: decrypt incoming `<message>` with `<encrypted>`
-- [ ] SCE envelope wrapping (XEP-0420)
+- [ ] SCE envelope wrap/unwrap on the message-body path (already
+      implemented in `omemo-stanza::sce` from Stage 4 prep)
 - [ ] Trust-on-first-use device acceptance (configurable)
+- [ ] StartTLS path (production): bring back `tokio-xmpp/starttls` +
+      `aws_lc_rs` + `rustls-native-certs` features, switch from
+      `connect_plaintext` to `Client::new` for non-localhost JIDs.
 - [ ] **Gate**: local Prosody integration test, two `omemo-pep` instances
       exchange 3 messages over real XMPP.
 

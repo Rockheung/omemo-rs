@@ -1,0 +1,29 @@
+# Localhost Prosody for omemo-rs integration tests.
+#
+# Start:  docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+# Status: docker compose -f .../docker-compose.yml ps
+# Logs:   docker compose -f .../docker-compose.yml logs -f prosody
+# Stop:   docker compose -f .../docker-compose.yml down -v
+#
+# Two pre-registered accounts:  alice@localhost / alicepass
+#                               bob@localhost   / bobpass
+
+services:
+  prosody:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omemo-rs/prosody:local
+    container_name: omemo-rs-prosody
+    ports:
+      - "127.0.0.1:5222:5222"
+    volumes:
+      - prosody-data:/var/lib/prosody
+    healthcheck:
+      test: ["CMD", "prosodyctl", "status"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  prosody-data:

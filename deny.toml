@@ -28,6 +28,10 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "Unicode-3.0",
+    # MPL-2.0 is file-scoped weak copyleft — combining with MIT does not
+    # infect our own crates. Accepted for the xmpp-rs family (tokio-xmpp,
+    # xmpp-parsers, jid, minidom, stringprep). See ADR-007.
+    "MPL-2.0",
 ]
 
 # Confidence threshold for SPDX detection. 0.93 is the cargo-deny default
