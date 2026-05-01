@@ -18,10 +18,15 @@
 //! `jid`) per ADR-007. Our own code remains MIT.
 
 pub use jid::BareJid;
-pub use omemo_stanza::{Bundle, Device, DeviceList, PreKey, SignedPreKey};
+pub use omemo_stanza::{
+    Bundle, Device, DeviceList, Encrypted, Key, KeysGroup, PreKey, SignedPreKey,
+};
 pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event};
 
+mod message;
 mod pep;
+
+pub use message::{decrypt_message, encrypt_message, MessageError, Recipient};
 pub use pep::{
     fetch_bundle, fetch_device_list, publish_bundle, publish_device_list, PepError, BUNDLES_NODE,
     DEVICES_NODE, ITEM_ID_CURRENT,

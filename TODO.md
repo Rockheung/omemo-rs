@@ -180,10 +180,14 @@ test, all green together.
       Payload" → AES-CBC body + 16-byte HMAC, key||hmac (48B) blob is
       what each recipient's session encrypts. Round-trip + tamper +
       bad-blob-length tests all green.
-- [ ] Compose `seal_payload` with `TwomemoSession::encrypt_message`
-      to produce the `<encrypted>` stanza (multi-recipient, per-device
-      `<key rid=>` blobs, single shared `<payload>`). Pure-stanza level,
-      no XMPP yet — alice ↔ bob cross-session round-trip.
+- [x] Compose `seal_payload` with per-device
+      `TwomemoSession::encrypt_message` to produce the `<encrypted>`
+      stanza — `omemo_pep::{encrypt_message, decrypt_message,
+      Recipient}`. Single shared `<payload>`, one `<key rid=>` per
+      recipient device. Tests: alice→bob single-device round-trip,
+      alice→{bob_dev1, bob_dev2} multi-device round-trip, wrong-jid /
+      wrong-device negative tests. `kex=false` for now (KEX wrapping
+      lands with the X3DH-aware outbound interceptor).
 - [ ] Stanza interceptor (outbound): encrypt outgoing `<message>` if
       recipient has device list — wires bundle fetch + X3DH active +
       encrypt + send.
