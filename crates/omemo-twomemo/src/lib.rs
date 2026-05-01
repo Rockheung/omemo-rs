@@ -21,6 +21,7 @@
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use prost::Message as _;
+use rand_core::RngCore as _;
 use sha2::Sha256;
 use thiserror::Error;
 use zeroize::Zeroize as _;
@@ -75,11 +76,11 @@ pub fn build_associated_data(ad_x3dh: &[u8], h: &DrHeader) -> Vec<u8> {
     out
 }
 
-fn derive(key: &[u8]) -> ([u8; 32], [u8; 32], [u8; 16]) {
+fn derive_with_info(key: &[u8], info: &[u8]) -> ([u8; 32], [u8; 32], [u8; 16]) {
     let salt = [0u8; 32];
     let mut out = [0u8; 80];
     Hkdf::<Sha256>::new(Some(&salt), key)
-        .expand(AEAD_INFO, &mut out)
+        .expand(info, &mut out)
         .expect("HKDF-SHA-256 expand within limits");
     let mut enc = [0u8; 32];
     let mut auth = [0u8; 32];
@@ -89,6 +90,10 @@ fn derive(key: &[u8]) -> ([u8; 32], [u8; 32], [u8; 16]) {
     iv.copy_from_slice(&out[64..80]);
     out.zeroize();
     (enc, auth, iv)
+}
+
+fn derive(key: &[u8]) -> ([u8; 32], [u8; 32], [u8; 16]) {
+    derive_with_info(key, AEAD_INFO)
 }
 
 fn truncated_hmac(key: &[u8], data: &[u8]) -> [u8; MAC_LEN] {
@@ -642,4 +647,155 @@ pub fn peek_dh_pub(auth_msg_bytes: &[u8]) -> Result<[u8; 32], TwomemoError> {
     let mut out = [0u8; 32];
     out.copy_from_slice(&inner.dh_pub);
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// XEP-0384 v0.9 §4.4 SCE-payload encryption.
+//
+// The body of a multi-recipient OMEMO 2 message is encrypted *once* with a
+// fresh 32-byte AES key; that key (concatenated with a 16-byte HMAC tag
+// over the ciphertext) is then encrypted **per recipient device** through
+// each device's twomemo session. So one `<payload>` is shared, and one
+// `<key rid=...>` per recipient device carries that device's own
+// 48-byte sealed key blob.
+//
+// This module exposes only the payload-side seal/open. Wrapping the
+// 48-byte blob in a twomemo `OMEMOAuthenticatedMessage` per recipient is
+// `TwomemoSession::encrypt_message` (one call per recipient). Composition
+// happens one layer up.
+// ---------------------------------------------------------------------------
+
+/// HKDF info string for the SCE-payload key schedule.
+pub const PAYLOAD_INFO: &[u8] = b"OMEMO Payload";
+/// Length of the per-message key blob distributed via twomemo:
+/// 32-byte symmetric key concatenated with the 16-byte truncated HMAC.
+pub const PAYLOAD_KEY_BLOB_LEN: usize = 32 + MAC_LEN;
+
+#[derive(Debug, Error)]
+pub enum SceError {
+    #[error("HMAC mismatch — payload tampered or wrong key")]
+    HmacMismatch,
+    #[error("AES-CBC unpadding error (PKCS#7)")]
+    UnpaddingError,
+    #[error("invalid key_blob length: expected {PAYLOAD_KEY_BLOB_LEN}, got {0}")]
+    InvalidKeyBlobLength(usize),
+}
+
+/// Seal `plaintext` for multi-recipient distribution per XEP-0384 §4.4.
+/// Returns `(payload_ciphertext, key_blob)` where:
+///
+/// * `payload_ciphertext` is what goes into the `<payload>` element
+///   (single copy, identical for every recipient).
+/// * `key_blob` is the 48-byte `key || hmac` to be encrypted *once per
+///   recipient device* via that device's `TwomemoSession::encrypt_message`,
+///   yielding the per-`<key rid>` `OMEMOAuthenticatedMessage` bytes.
+pub fn seal_payload(plaintext: &[u8]) -> (Vec<u8>, [u8; PAYLOAD_KEY_BLOB_LEN]) {
+    let mut key = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut key);
+    let result = seal_payload_with_key(&key, plaintext);
+    key.zeroize();
+    result
+}
+
+/// Deterministic counterpart of [`seal_payload`] used by tests / fixture
+/// replay. The `key` should be uniformly random in production.
+pub fn seal_payload_with_key(
+    key: &[u8; 32],
+    plaintext: &[u8],
+) -> (Vec<u8>, [u8; PAYLOAD_KEY_BLOB_LEN]) {
+    let (mut enc_key, mut auth_key, iv) = derive_with_info(key, PAYLOAD_INFO);
+    let ciphertext =
+        Aes256CbcEnc::new(&enc_key.into(), &iv.into()).encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+    let hmac = truncated_hmac(&auth_key, &ciphertext);
+    enc_key.zeroize();
+    auth_key.zeroize();
+    let mut blob = [0u8; PAYLOAD_KEY_BLOB_LEN];
+    blob[..32].copy_from_slice(key);
+    blob[32..].copy_from_slice(&hmac);
+    (ciphertext, blob)
+}
+
+/// Inverse of [`seal_payload`]. Returns the decrypted plaintext.
+pub fn open_payload(payload: &[u8], key_blob: &[u8]) -> Result<Vec<u8>, SceError> {
+    if key_blob.len() != PAYLOAD_KEY_BLOB_LEN {
+        return Err(SceError::InvalidKeyBlobLength(key_blob.len()));
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&key_blob[..32]);
+    let expected_hmac = &key_blob[32..];
+
+    let (mut enc_key, mut auth_key, iv) = derive_with_info(&key, PAYLOAD_INFO);
+    let actual_hmac = truncated_hmac(&auth_key, payload);
+    if !constant_time_eq(&actual_hmac, expected_hmac) {
+        enc_key.zeroize();
+        auth_key.zeroize();
+        key.zeroize();
+        return Err(SceError::HmacMismatch);
+    }
+    let pt = Aes256CbcDec::new(&enc_key.into(), &iv.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(payload)
+        .map_err(|_| SceError::UnpaddingError);
+    enc_key.zeroize();
+    auth_key.zeroize();
+    key.zeroize();
+    pt
+}
+
+#[cfg(test)]
+mod sce_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_random_key() {
+        let plaintext = b"the quick brown fox jumps over the lazy dog";
+        let (payload, blob) = seal_payload(plaintext);
+        assert_ne!(payload, plaintext, "ciphertext must differ from plaintext");
+        let recovered = open_payload(&payload, &blob).expect("open");
+        assert_eq!(recovered, plaintext);
+    }
+
+    #[test]
+    fn round_trip_deterministic() {
+        let key = [0xABu8; 32];
+        let pt = b"hello SCE";
+        let (payload_a, blob_a) = seal_payload_with_key(&key, pt);
+        let (payload_b, blob_b) = seal_payload_with_key(&key, pt);
+        assert_eq!(payload_a, payload_b, "deterministic");
+        assert_eq!(blob_a, blob_b);
+        let recovered = open_payload(&payload_a, &blob_a).expect("open");
+        assert_eq!(recovered, pt);
+    }
+
+    #[test]
+    fn tampered_payload_rejected() {
+        let pt = b"important secret";
+        let (mut payload, blob) = seal_payload(pt);
+        // Flip a bit deep in the ciphertext.
+        payload[5] ^= 0x80;
+        match open_payload(&payload, &blob) {
+            Err(SceError::HmacMismatch) => {}
+            other => panic!("expected HmacMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrong_key_blob_length_rejected() {
+        let (_payload, _blob) = seal_payload(b"data");
+        let bad = vec![0u8; PAYLOAD_KEY_BLOB_LEN - 1];
+        match open_payload(b"some-bytes", &bad) {
+            Err(SceError::InvalidKeyBlobLength(got)) => assert_eq!(got, PAYLOAD_KEY_BLOB_LEN - 1),
+            other => panic!("expected InvalidKeyBlobLength, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn payload_is_distinct_from_message_aead() {
+        // Sanity: SCE payload uses info "OMEMO Payload"; twomemo per-device
+        // AEAD uses "OMEMO Message Key Material". A naive caller swapping
+        // the two would silently produce an HMAC mismatch on decrypt.
+        // This test pins the constants so the rename can't drift unnoticed.
+        assert_eq!(PAYLOAD_INFO, b"OMEMO Payload");
+        assert_eq!(AEAD_INFO, b"OMEMO Message Key Material");
+        assert_ne!(PAYLOAD_INFO, AEAD_INFO);
+    }
 }

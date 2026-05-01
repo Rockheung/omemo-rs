@@ -175,9 +175,21 @@ test, all green together.
       bundles don't get evicted. Skipped for now (Prosody auto-creates
       with sane defaults for our self-PEP tests). Required before
       Conversations/Dino interop in Stage 6.
-- [ ] Stanza interceptor: encrypt outgoing `<message>` if recipient has
-      device list
-- [ ] Stanza interceptor: decrypt incoming `<message>` with `<encrypted>`
+- [x] SCE payload sym crypto in `omemo-twomemo::seal_payload` /
+      `open_payload` (XEP-0384 v0.9 §4.4): random key + HKDF "OMEMO
+      Payload" → AES-CBC body + 16-byte HMAC, key||hmac (48B) blob is
+      what each recipient's session encrypts. Round-trip + tamper +
+      bad-blob-length tests all green.
+- [ ] Compose `seal_payload` with `TwomemoSession::encrypt_message`
+      to produce the `<encrypted>` stanza (multi-recipient, per-device
+      `<key rid=>` blobs, single shared `<payload>`). Pure-stanza level,
+      no XMPP yet — alice ↔ bob cross-session round-trip.
+- [ ] Stanza interceptor (outbound): encrypt outgoing `<message>` if
+      recipient has device list — wires bundle fetch + X3DH active +
+      encrypt + send.
+- [ ] Stanza interceptor (inbound): decrypt incoming `<message>` with
+      `<encrypted>` — X3DH passive on KEX flag, advance ratchet
+      otherwise.
 - [ ] SCE envelope wrap/unwrap on the message-body path (already
       implemented in `omemo-stanza::sce` from Stage 4 prep)
 - [ ] Trust-on-first-use device acceptance (configurable)
