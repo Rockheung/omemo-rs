@@ -39,9 +39,9 @@ pub use pep::{
     DEVICES_NODE, ITEM_ID_CURRENT,
 };
 pub use store::{
-    bootstrap_and_save_active, bundle_from_store, encrypt_to_peer, install_identity,
-    receive_first_message, receive_followup, x3dh_state_from_store, IdentitySeed, InboundEnvelope,
-    StoreFlowError, TrustPolicy,
+    bootstrap_and_save_active, bundle_from_store, encrypt_to_peer, encrypt_to_peers,
+    install_identity, receive_first_message, receive_followup, x3dh_state_from_store, IdentitySeed,
+    InboundEnvelope, PeerSpec, StoreFlowError, TrustPolicy,
 };
 pub use wire::{send_encrypted, wait_for_encrypted, WireError};
 

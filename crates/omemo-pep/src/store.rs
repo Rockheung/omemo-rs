@@ -395,6 +395,86 @@ pub fn encrypt_to_peer(
     Ok(encrypted)
 }
 
+/// One recipient device for a multi-recipient `encrypt_to_peers` call.
+///
+/// `kex` is `Some` only on the first message of a freshly bootstrapped
+/// session for that device; the carrier wraps that key entry in
+/// `OMEMOKeyExchange` so the peer can run X3DH passive. Subsequent
+/// messages on the same session pass `None`.
+pub struct PeerSpec<'a> {
+    pub jid: &'a str,
+    pub device_id: u32,
+    pub kex: Option<KexCarrier>,
+}
+
+/// Encrypt `body_text` for *every* peer device in `peers`, sealing the
+/// SCE envelope **once** and emitting one `<key rid=>` per device.
+///
+/// `envelope_to` is the address that lands in the envelope's `<to>`
+/// element — for a 1:1 chat that's the peer's bare JID; for MUC group
+/// chat it's the room's bare JID (XEP-0384 §6.1).
+///
+/// Each peer comes with its own `Box<dyn DhPrivProvider>` so per-device
+/// ratchet steps can pull from independent priv sources (production:
+/// OS RNG; tests: fixed queues).
+///
+/// Refuses any `Untrusted` peer device — the same gate as
+/// [`encrypt_to_peer`].
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_to_peers(
+    store: &mut Store,
+    own_device_id: u32,
+    envelope_to: &str,
+    body_text: &str,
+    peers: Vec<(PeerSpec<'_>, Box<dyn DhPrivProvider>)>,
+) -> Result<Encrypted, StoreFlowError> {
+    let our_jid = store
+        .get_identity()?
+        .ok_or(StoreFlowError::IdentityMissing)?
+        .bare_jid;
+    let envelope_xml = build_envelope(body_text, &our_jid, envelope_to)?;
+
+    for (peer, _) in &peers {
+        refuse_if_untrusted(store, peer.jid, peer.device_id)?;
+    }
+
+    // Load all sessions before borrowing them mutably for `Recipient`.
+    let mut sessions: Vec<TwomemoSession> = Vec::with_capacity(peers.len());
+    let mut peer_keys: Vec<(String, u32, Option<KexCarrier>)> = Vec::with_capacity(peers.len());
+    for (peer, provider) in peers {
+        let snap = store
+            .load_session_snapshot(peer.jid, peer.device_id)?
+            .ok_or_else(|| StoreFlowError::SessionMissing {
+                jid: peer.jid.to_owned(),
+                device_id: peer.device_id,
+            })?;
+        sessions.push(TwomemoSession::from_snapshot(snap, provider));
+        peer_keys.push((peer.jid.to_owned(), peer.device_id, peer.kex));
+    }
+
+    let encrypted = {
+        let mut recipients: Vec<Recipient> = peer_keys
+            .iter()
+            .zip(sessions.iter_mut())
+            .map(|((jid, device_id, kex), s)| Recipient {
+                jid: jid.as_str(),
+                device_id: *device_id,
+                session: s,
+                kex: kex.clone(),
+            })
+            .collect();
+        encrypt_message(own_device_id, &mut recipients, envelope_xml.as_bytes())?
+    };
+
+    // Persist the advanced sessions. Order doesn't matter — each
+    // (jid, device_id) row is independent.
+    for ((jid, device_id, _), sess) in peer_keys.iter().zip(sessions.iter()) {
+        store.save_session(jid, *device_id, sess)?;
+    }
+
+    Ok(encrypted)
+}
+
 fn locate_our_key<'a>(
     encrypted: &'a Encrypted,
     our_jid: &str,

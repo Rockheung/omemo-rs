@@ -171,6 +171,48 @@ impl MucRoom {
         Ok(())
     }
 
+    /// Resolve a `from='room@conf/nick'` sender to the occupant's real
+    /// bare JID, if known. Returns `None` if the bare doesn't match
+    /// this room, the nick isn't in our occupant table, or the room
+    /// is anonymous (no `<item jid=>` was ever broadcast for that
+    /// nick).
+    ///
+    /// Stage 5.4 inbound MUC dispatch — given a groupchat message,
+    /// the sender's full JID names the room + occupant nick, and the
+    /// caller needs the real bare JID to look up the device's session
+    /// in `omemo-session`. Self-echo (we sent a message and the room
+    /// reflects it back) is the caller's responsibility to filter:
+    /// compare the resolved real JID against `Store::get_identity()`.
+    pub fn resolve_sender_real_jid<'a>(&'a self, sender_full: &FullJid) -> Option<&'a BareJid> {
+        if sender_full.to_bare() != self.jid {
+            return None;
+        }
+        let nick = sender_full.resource().as_str();
+        self.occupants.get(nick).and_then(|o| o.real_jid.as_ref())
+    }
+
+    /// Send `encrypted` as the OMEMO 2 payload of a
+    /// `<message type='groupchat' to='room@conf'>` stanza. Every
+    /// occupant — and every occupant device — receives the same bytes
+    /// from the MUC service, which routes via the room's broadcast
+    /// list. Caller must build `encrypted` via
+    /// [`encrypt_to_peers`][crate::encrypt_to_peers] with `envelope_to`
+    /// equal to `self.jid`.
+    pub async fn send_groupchat(
+        &self,
+        client: &mut Client,
+        encrypted: &omemo_stanza::Encrypted,
+    ) -> Result<(), MucError> {
+        let xml = encrypted
+            .encode()
+            .map_err(|e| MucError::Parse(e.to_string()))?;
+        let elem = Element::from_str(&xml).map_err(|e| MucError::Parse(e.to_string()))?;
+        let msg = xmpp_parsers::message::Message::groupchat(Some(Jid::from(self.jid.clone())))
+            .with_payloads(vec![elem]);
+        client.send_stanza(msg.into()).await?;
+        Ok(())
+    }
+
     /// PEP-fetch the device list for every occupant whose real JID we
     /// know, persisting each result into `store` via `upsert_device`.
     /// Occupants without a `real_jid` (anonymous-room participants) are
@@ -419,5 +461,34 @@ mod tests {
             }
             other => panic!("expected OccupantJoined, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_sender_real_jid_walks_occupant_table() {
+        let mut room = MucRoom::new(
+            BareJid::new("general@conference.localhost").unwrap(),
+            "alice_nick",
+        );
+        let p = presence_from_xml(
+            "<presence from='general@conference.localhost/bob_nick' xmlns='jabber:client'>\
+                <x xmlns='http://jabber.org/protocol/muc#user'>\
+                    <item affiliation='member' role='participant' \
+                          jid='bob@example.org/phone'/>\
+                </x>\
+             </presence>",
+        );
+        room.handle_presence(&p).unwrap();
+
+        let bob_full = FullJid::new("general@conference.localhost/bob_nick").unwrap();
+        let resolved = room.resolve_sender_real_jid(&bob_full).unwrap();
+        assert_eq!(resolved.as_str(), "bob@example.org");
+
+        // Different room — refuses.
+        let other_full = FullJid::new("other@conference.localhost/bob_nick").unwrap();
+        assert!(room.resolve_sender_real_jid(&other_full).is_none());
+
+        // Unknown nick — None.
+        let unknown_full = FullJid::new("general@conference.localhost/eve_nick").unwrap();
+        assert!(room.resolve_sender_real_jid(&unknown_full).is_none());
     }
 }
