@@ -1,0 +1,82 @@
+name: integration
+
+# Brings up the local Prosody MUC fixture and runs the
+# `#[ignore]`'d integration tests in `omemo-pep` (Stage 4 + Stage 5
+# gates plus the `connect` / `pep` smoke checks). Kept separate from
+# `ci.yml` because building the Prosody image and waiting for the
+# container to come up adds ~60s — too slow to gate every PR on.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Tue 06:00 UTC — independently of the fixture-drift job
+    # in ci.yml, so transport-side regressions don't get hidden by a
+    # passing self-contained suite.
+    - cron: "0 6 * * 2"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  prosody:
+    name: cargo test --ignored (Prosody)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + git + target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-int-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-int-
+            ${{ runner.os }}-cargo-
+
+      - name: Pre-compile integration tests
+        # Build the test binaries first so the wait-for-Prosody step
+        # below is the only thing the container has to outlive.
+        run: cargo test -p omemo-pep --no-run --tests
+
+      - name: Bring up Prosody
+        run: |
+          docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d --build
+          # Tight wait loop with a 90s ceiling. Prosody's healthcheck
+          # interval is 5s, so it usually flips healthy in well under
+          # half that.
+          for _ in $(seq 1 45); do
+            status=$(docker compose -f test-vectors/integration/prosody/docker-compose.yml ps --format json | head -n1)
+            if echo "$status" | grep -q '"Health":"healthy"'; then
+              echo "Prosody is healthy."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Prosody did not become healthy within 90s — last status:"
+          echo "$status"
+          docker compose -f test-vectors/integration/prosody/docker-compose.yml logs
+          exit 1
+
+      - name: cargo test -- --ignored
+        run: cargo test -p omemo-pep -- --ignored
+
+      - name: Prosody logs (always, for debugging)
+        if: always()
+        run: docker compose -f test-vectors/integration/prosody/docker-compose.yml logs --tail=200
+
+      - name: Stop Prosody
+        if: always()
+        run: docker compose -f test-vectors/integration/prosody/docker-compose.yml down -v
