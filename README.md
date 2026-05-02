@@ -30,19 +30,21 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 2 | `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
 | 3 | `omemo-session` | ✅ | identity + bundle + persist + restart, no re-keying |
 | 4 | `omemo-pep` | ✅ | alice ↔ bob 3 messages over real Prosody (`gate.rs`) |
-| 5 | Group OMEMO (MUC) | ⏳ | needs Prosody |
+| 5 | Group OMEMO (MUC) | ✅ | 3 omemo-pep clients groupchat round-trip on real Prosody MUC (`tests/muc.rs`) |
 | 6 | Real-client interop | ⏳ | needs Conversations / Dino |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
-fixture. `cargo test --workspace` passes 57 unit/replay tests; an
-additional 4 integration tests gate the XMPP path against a local
-Prosody container (run with `-- --ignored`). Stage 4 + follow-ups
-(4-FU.1 to 4-FU.4) are done: the gate flows entirely through
-`omemo-session`'s SQLite store, message bodies are wrapped in
-XEP-0420 SCE envelopes with `<to>`-verification on inbound, every
-peer device is recorded under TOFU or Manual trust policy with IK-drift
-detection, and production deployments ship StartTLS via
-`connect_starttls` (rustls + aws-lc-rs + native cert validation).
+fixture. `cargo test --workspace` passes 62 unit/replay tests; an
+additional 7 integration tests gate the XMPP path against a local
+Prosody container (run with `-- --ignored`). Stages 4 + 5 (with all
+4-FU.1..4 follow-ups) are done: alice ↔ bob 1:1 *and* alice → bob+carol
+groupchat round-trip on a real Prosody MUC, the gate flows entirely
+through `omemo-session`'s SQLite store, message bodies are wrapped in
+XEP-0420 SCE envelopes with `<to>`-verification on inbound (peer bare
+for DM, room bare for groupchat), every peer device is recorded under
+TOFU or Manual trust policy with IK-drift detection, and production
+deployments ship StartTLS via `connect_starttls` (rustls + aws-lc-rs +
+native cert validation).
 
 ## Workspace layout
 

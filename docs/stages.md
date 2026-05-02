@@ -4,7 +4,7 @@ This is the master plan, with definition-of-done criteria ("gates") for each
 stage. A stage is not done until its gate test is green. The TODO.md at the
 repo root is the live, checkbox-style derivative of this document.
 
-**Status (2026-05-01)**: Stages 0–4 complete; Stage 4 follow-ups
+**Status (2026-05-02)**: Stages 0–5 complete; Stage 4 follow-ups
 4-FU.1 through 4-FU.4 done. Crypto layer is byte-equal with the
 Syndace Python stack, XEP-0384 v0.9 stanzas round-trip canonically,
 SQLite-backed identity/SPK/OPK/session persistence is the system of
@@ -13,11 +13,13 @@ XEP-0420 SCE envelopes with `<to>`-verification on inbound, peer
 devices are tracked under a TOFU/Manual trust policy with IK-drift
 detection, production deployments ship StartTLS via
 `connect_starttls` (rustls + aws-lc-rs + native cert validation),
-and two `omemo-pep` instances exchange three OMEMO 2 chat messages
-over a real Prosody (`tests/gate.rs`). Stages 5 (Group OMEMO/MUC)
-and 6 (Conversations + Dino interop) remain — they need either MUC
-plumbing or external clients and so cannot be self-contained in this
-repo's test suite.
+two `omemo-pep` instances exchange three OMEMO 2 chat messages over
+a real Prosody (`tests/gate.rs`), and three `omemo-pep` instances
+exchange OMEMO 2 group-chat messages over a real Prosody MUC
+(`tests/muc.rs::three_clients_groupchat_omemo2_round_trip`). Stage 6
+(Conversations + Dino interop) is the remaining track — it needs
+external clients and so cannot be self-contained in this repo's
+test suite.
 
 ## Stage 0 — Workspace + Test-Vector Pipeline ✅
 
@@ -291,19 +293,49 @@ that alice's device is `Trusted` in bob's store after KEX.
 `charlie`) without same-JID reconnect collisions. Prosody Dockerfile
 registers all five accounts on entrypoint.
 
-## Stage 5 — Group OMEMO (MUC)
+## Stage 5 — Group OMEMO (MUC) ✅
 
-**Scope**: Extend Stage 4 to MUC rooms (XEP-0384 §6).
+**Scope**: Extended Stage 4 to MUC rooms (XEP-0384 §6).
 
-Per the spec, MUC OMEMO is "the same encrypted-key-per-device fanout but
-the message body is one ciphertext for all recipients". Practical issues:
-* Membership tracking: MUC presence stanzas tell us occupant JIDs; we have
-  to map them to real JIDs to then resolve their device lists.
-* Joins: bundle-fetch storm when a many-occupant room is joined.
-* Leaves: stale device lists; eventual-consistency only.
+Per the spec, MUC OMEMO is "the same encrypted-key-per-device fan-out
+but the message body is one ciphertext for all recipients". Stage 5
+landed it in five sub-stages:
 
-**Gate**: Three `omemo-pep` clients + one Conversations client in a MUC,
-all four exchange and decrypt messages.
+* **5.1** — `omemo-pep::muc` module: `MucRoom`, `Occupant`, `MucEvent`.
+  `send_join` / `send_leave` / `accept_default_config` (pins
+  `muc#roomconfig_whois = anyone` so the room is non-anonymous and
+  bundles can be addressed) / `handle_presence` (parses
+  `<x xmlns='muc#user'>` and updates the occupant table).
+* **5.2** — `MucRoom::refresh_device_lists(client, store)` walks every
+  occupant with a known real JID and PEP-fetches their device list,
+  persisting via `Store::upsert_device`. Self-PEP is skipped (Prosody
+  iq tracker quirk).
+* **5.3** — Multi-recipient `omemo-pep::encrypt_to_peers(store,
+  own_device_id, envelope_to, body_text, peers, providers)` and
+  `MucRoom::send_groupchat(client, &Encrypted)`. One SCE envelope,
+  one `<key rid=>` per device, one `<message type='groupchat'>`.
+* **5.4** — `MucRoom::resolve_sender_real_jid(&FullJid)` resolves
+  `from='room/nick'` to the occupant's real bare JID so callers can
+  route through the existing `inbound_kind` / `receive_first_message`
+  / `receive_followup` pipeline. The same receive helpers gained an
+  `expected_envelope_to: &str` parameter (DM passes our_jid;
+  groupchat passes room_jid — XEP-0384 §4.5).
+* **5.5** — Gate: `tests/muc.rs::three_clients_groupchat_omemo2_round_trip`.
+  alice / bob / carol on `muc_e` / `muc_f` / `muc_g`. Alice runs
+  X3DH active for both peers, sends one groupchat with a KEX-wrapped
+  fan-out envelope; both receivers decrypt to the same body. Message
+  #2 is the same fan-out with `kex=None`, decrypted via
+  `receive_followup`.
+
+Test infra: Prosody MUC component on `conference.localhost` with
+`muc_room_locking = false`. Per-scenario account allocation
+(`muc_a` / `muc_b` for 5.1, `muc_c` / `muc_d` for 5.2, `muc_e` /
+`muc_f` / `muc_g` for 5.5) plus `serial_test::serial` to keep
+binary-internal parallelism from racing the cold container.
+
+**Out of scope (deferred to Stage 6)**: cross-client interop —
+the original ambition was "3 omemo-rs + 1 Conversations" but the
+Conversations leg properly belongs to the external-client stage.
 
 ## Stage 6 — Real-Client Interop
 

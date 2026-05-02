@@ -19,21 +19,24 @@ Ordering reflects dependencies — do top to bottom.
 | 2 — `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
 | 3 — `omemo-session` | ✅ | persist/restart 1:1 round-trip |
 | 4 — `omemo-pep` | ✅ | alice ↔ bob 3-message exchange over real Prosody (`gate.rs`) |
-| 5 — Group OMEMO | ⏳ | 3 omemo-rs + 1 Conversations in MUC |
+| 5 — Group OMEMO | ✅ | `three_clients_groupchat_omemo2_round_trip` (3 omemo-rs in MUC) |
 | 6 — Real-client interop | ⏳ | Conversations + Dino DM/MUC |
 
-**Stages 1–4 complete + 4-FU.1 / .2 / .3 / .4.** Two `omemo-pep`
-instances exchange three OMEMO 2 chat messages end-to-end across a
-real Prosody, with `omemo-session`'s SQLite store as the system of
-record on both sides; bodies are wrapped in XEP-0420 SCE envelopes
-(`<to>` is verified on inbound) and the trust layer records every
+**Stages 1–5 complete + 4-FU.1 / .2 / .3 / .4.** Three `omemo-pep`
+clients exchange OMEMO 2 group-chat messages end-to-end across a real
+Prosody MUC: alice runs X3DH active for bob and carol, sends one
+`<message type='groupchat'>` carrying two `<key rid=>` entries, both
+bob and carol decrypt the same body via `receive_first_message` →
+`receive_followup`. The 1:1 path stays green from Stage 4. Bodies are
+wrapped in XEP-0420 SCE envelopes (`<to>` verified on inbound — peer
+bare for DM, room bare for groupchat); the trust layer records every
 peer device on first sight under TOFU or Manual policy with IK-drift
-detection. Production now ships StartTLS via `connect_starttls`
-(rustls + aws-lc-rs + native certs) alongside the `connect_plaintext`
-helper used by localhost integration. Crypto layer is byte-equal with
-the Syndace Python reference (replay strategy, ADR-004); transport
-layer is MPL-2.0 xmpp-rs (ADR-007). 57 self-contained tests + 4
-Prosody-backed integration tests all green. `cargo fmt --all --check`,
+detection. Production ships StartTLS via `connect_starttls` (rustls +
+aws-lc-rs + native certs) alongside the `connect_plaintext` helper
+used by localhost integration. Crypto layer is byte-equal with the
+Syndace Python reference (replay strategy, ADR-004); transport layer
+is MPL-2.0 xmpp-rs (ADR-007). 62 self-contained tests + 7 Prosody-
+backed integration tests all green. `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -D warnings`, `cargo deny
 check` all clean.
 
@@ -337,28 +340,84 @@ order.
       Pending → set_trust → success, Untrusted blocking both
       directions, and IK-drift rejection without OPK consumption.
 
-## Stage 5 — Group OMEMO (MUC)
+## Stage 5 — Group OMEMO (MUC) ✅
 
 Algorithmically the same as Stage 4 (one shared `<payload>`, one
 `<key rid=>` per recipient device, just across more recipient JIDs).
-The new work is XMPP-side: occupant discovery, real-JID mapping, and
-bundle-fetch concurrency on join.
+The Stage 5 work was XMPP-side: occupant discovery, real-JID mapping,
+and groupchat fan-out.
 
-- [ ] MUC join + occupant tracking (XEP-0045 presence parsing,
-      real-JID resolution from `<x xmlns='http://jabber.org/protocol/
-      muc#user'><item jid='real@bare/res'/></x>`).
-- [ ] Per-occupant device-list cache, refreshed on PEP `<event>` for
-      each room member.
-- [ ] Bundle-fetch backpressure on join — limit concurrent
-      `fetch_bundle` to N (avoid stampeding a 50-occupant room).
-- [ ] Outbound MUC message: encrypt for *every* device of *every*
-      occupant (excluding our own); use `groupchat` message type,
-      `to=room@conf` bare.
-- [ ] Inbound MUC message: dispatch via `inbound_kind` exactly as
-      Stage 4; the only new thing is the `from` JID is the room +
-      occupant nick, real JID looked up via the cache.
-- [ ] **Gate**: 3 omemo-rs clients + 1 Conversations client in a
-      MUC, all four exchange and decrypt messages.
+### 5.1 — MUC join + occupant tracking ✅
+
+- [x] `omemo-pep::muc` module: `MucRoom { jid, our_nick, occupants:
+      HashMap<String, Occupant> }`, `Occupant { nick, real_jid,
+      affiliation, role }`. `send_join` / `send_leave` send the
+      directed presence; `handle_presence` parses
+      `<x xmlns='muc#user'>` and updates the occupant table.
+- [x] `accept_default_config` submits `muc#owner` form pinning
+      `muc#roomconfig_whois = anyone` so the room is non-anonymous —
+      required for OMEMO MUC since we need real JIDs to fetch each
+      occupant's bundle.
+- [x] Prosody MUC component (`conference.localhost`) registered with
+      `muc_room_locking = false` and public-by-default flags.
+- [x] 4 unit tests + integration test
+      `two_clients_join_same_room_and_see_each_other`.
+
+### 5.2 — Per-occupant device-list cache ✅
+
+- [x] `MucRoom::refresh_device_lists(client, store)` walks every
+      occupant with a real_jid, calls `pep::fetch_device_list`, and
+      persists each result via `Store::upsert_device`. Self-PEP
+      fetches are skipped (Prosody self-pubsub iq-result has no
+      `from` and would hang the iq tracker).
+- [x] Sequential by design — `tokio_xmpp::Client::send_iq` takes
+      `&mut self`, so genuine in-flight concurrency would need a
+      connection pool. Bot-sized rooms (≤ ~50 occupants) are RTT-
+      bound; backpressure stays a follow-up if profiling motivates.
+- [x] Integration test
+      `refresh_pulls_each_occupants_device_list_into_store`.
+
+### 5.3 — Outbound MUC message ✅
+
+- [x] `omemo-pep::PeerSpec { jid, device_id, kex }` and
+      `encrypt_to_peers(store, own_device_id, envelope_to,
+      body_text, peers, providers)` seal one SCE envelope for the
+      whole room and emit one `<key rid=>` per device.
+      `envelope_to = room.jid` for groupchat (XEP-0384 §6.1).
+- [x] `MucRoom::send_groupchat(client, &Encrypted)` wraps the
+      `<encrypted>` in `<message type='groupchat' to='room@conf'>`.
+
+### 5.4 — Inbound MUC message dispatch ✅
+
+- [x] `MucRoom::resolve_sender_real_jid(&FullJid)` maps
+      `from='room@conf/nick'` to the occupant's stored real bare JID
+      so callers can route through the existing `inbound_kind` /
+      `receive_first_message` / `receive_followup` pipeline.
+- [x] `receive_first_message` / `receive_followup` got an
+      `expected_envelope_to: &str` parameter — DM passes our_jid,
+      groupchat passes room_jid. (XEP-0384 §4.5 envelope-`<to>`
+      verification.)
+- [x] Self-echo filtering is the caller's responsibility (compare
+      resolved real JID vs `Store::get_identity()`).
+
+### 5.5 — Gate ✅
+
+- [x] `tests/muc.rs::three_clients_groupchat_omemo2_round_trip`:
+      alice / bob / carol on `muc_e` / `muc_f` / `muc_g` exchange
+      two OMEMO 2 group chat messages. Both are fan-out: alice runs
+      X3DH active for bob+carol once, sends one `<message
+      type='groupchat'>` carrying two `<key rid=>` entries, both
+      bob and carol decrypt to the original body. Message #1 is
+      KEX-wrapped (status 110 + IK record into TOFU trust store);
+      message #2 is the follow-up.
+- [x] `pump_three` helper drains all three streams concurrently
+      (same reason as `pump_two`: Prosody broadcasts to whichever
+      client is idling).
+- [x] Cross-client interop with Conversations / Dino is Stage 6 —
+      the original Stage 5 ambition was "3 omemo-rs + 1
+      Conversations" but the Conversations leg requires a different
+      gate environment and properly belongs to the external-client
+      stage.
 
 ## Stage 6 — Real-Client Interop
 
