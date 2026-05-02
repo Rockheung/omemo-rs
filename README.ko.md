@@ -34,16 +34,18 @@ OMEMO 2 만 구현합니다.
 | 6 | 실 클라이언트 상호운용 | ⏳ | Conversations / Dino 필요 |
 
 암호 계층은 모든 픽스처에서 Syndace Python 스택과 byte-equal 로 검증됩니다.
-`cargo test --workspace` 는 62개의 unit/replay 테스트를 통과하며,
+`cargo test --workspace` 는 64개의 unit/replay 테스트를 통과하며,
 추가로 7개의 integration 테스트가 로컬 Prosody 컨테이너 위에서 XMPP 경로를
 게이트합니다 (`-- --ignored` 로 실행). Stage 4 + Stage 5 + 4-FU.1~4-FU.4
-완료: alice ↔ bob 1:1 *및* alice → bob+carol 그룹 채팅 라운드트립이 실제
-Prosody MUC 위에서 동작하며, 게이트는 `omemo-session` SQLite 스토어를 단일
-진실 공급원으로 사용합니다. 메시지 본문은 XEP-0420 SCE 봉투에 감싸서 inbound
-시 `<to>` 검증 (DM 은 peer bare, groupchat 은 room bare), 모든 피어
-디바이스는 TOFU 혹은 Manual trust 정책 하에 IK-drift 탐지와 함께 기록됩니다.
-프로덕션 배포는 `connect_starttls` (rustls + aws-lc-rs + 네이티브 인증서
-검증) 로 StartTLS 를 사용합니다.
++ 5-FU.1~5-FU.3 완료: alice ↔ bob 1:1 *및* alice → bob+carol 그룹 채팅
+라운드트립이 실제 Prosody MUC 위에서 동작하며, 게이트는 `omemo-session`
+SQLite 스토어를 단일 진실 공급원으로 사용합니다. 메시지 본문은 XEP-0420
+SCE 봉투에 감싸서 inbound 시 `<to>` 검증 (DM 은 peer bare, groupchat 은
+room bare), 모든 피어 디바이스는 TOFU 혹은 Manual trust 정책 하에 IK-drift
+탐지와 함께 기록됩니다. 프로덕션 배포는 `connect_starttls` (rustls +
+aws-lc-rs + 네이티브 인증서 검증) 로 StartTLS 를 사용합니다. 새
+`omemo-rs-cli` 바이너리 (`crates/omemo-rs-cli/`) 가 production API 를
+실제 CLI 클라이언트로 시연합니다.
 
 ## 워크스페이스 레이아웃
 

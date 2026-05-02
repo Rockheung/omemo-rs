@@ -34,17 +34,19 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 6 | Real-client interop | ⏳ | needs Conversations / Dino |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
-fixture. `cargo test --workspace` passes 62 unit/replay tests; an
+fixture. `cargo test --workspace` passes 64 unit/replay tests; an
 additional 7 integration tests gate the XMPP path against a local
-Prosody container (run with `-- --ignored`). Stages 4 + 5 (with all
-4-FU.1..4 follow-ups) are done: alice ↔ bob 1:1 *and* alice → bob+carol
-groupchat round-trip on a real Prosody MUC, the gate flows entirely
-through `omemo-session`'s SQLite store, message bodies are wrapped in
-XEP-0420 SCE envelopes with `<to>`-verification on inbound (peer bare
-for DM, room bare for groupchat), every peer device is recorded under
-TOFU or Manual trust policy with IK-drift detection, and production
-deployments ship StartTLS via `connect_starttls` (rustls + aws-lc-rs +
-native cert validation).
+Prosody container (run with `-- --ignored`). Stages 4 + 5 + the
+4-FU.1..4 / 5-FU.1..3 follow-ups are done: alice ↔ bob 1:1 *and*
+alice → bob+carol groupchat round-trip on a real Prosody MUC, the
+gate flows entirely through `omemo-session`'s SQLite store, message
+bodies are wrapped in XEP-0420 SCE envelopes with `<to>`-verification
+on inbound (peer bare for DM, room bare for groupchat), every peer
+device is recorded under TOFU or Manual trust policy with IK-drift
+detection, and production deployments ship StartTLS via
+`connect_starttls` (rustls + aws-lc-rs + native cert validation).
+The new `omemo-rs-cli` binary (`crates/omemo-rs-cli/`) exercises
+the production API as a real CLI client.
 
 ## Workspace layout
 
@@ -84,10 +86,37 @@ inventory.
 ## Quickstart
 
 ```bash
-git clone https://github.com/.../omemo-rs.git
+git clone https://github.com/Rockheung/omemo-rs.git
 cd omemo-rs
 cargo test --workspace
 ```
+
+To exchange a real OMEMO 2 message against a localhost XMPP server,
+build the CLI:
+
+```bash
+docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+cargo build -p omemo-rs-cli --release
+
+# Initialise alice and bob (one-time per account):
+./target/release/omemo-rs-cli --jid muc_a@localhost --password mucapass \
+    --insecure-tcp 127.0.0.1:5222 init --device-id 1001 --opk-count 100
+./target/release/omemo-rs-cli --jid muc_b@localhost --password mucbpass \
+    --insecure-tcp 127.0.0.1:5222 init --device-id 1002 --opk-count 100
+
+# In one shell: bob waits for one message.
+./target/release/omemo-rs-cli --jid muc_b@localhost --password mucbpass \
+    --insecure-tcp 127.0.0.1:5222 recv --timeout 60 &
+
+# In another: alice sends.
+./target/release/omemo-rs-cli --jid muc_a@localhost --password mucapass \
+    --insecure-tcp 127.0.0.1:5222 send \
+    --peer muc_b@localhost --peer-device 1002 --body "hello"
+# bob prints: [<ts>] muc_a@localhost/1001: hello
+```
+
+Production deployments drop `--insecure-tcp`; the CLI defaults to
+`connect_starttls` (SRV + StartTLS + native cert validation).
 
 If you want to regenerate fixtures (after upstream Python package bumps):
 

@@ -123,7 +123,8 @@ omemo-rs/
 │   ├── omemo-twomemo/         # OMEMO 2 backend (twomemo.proto encoding)
 │   ├── omemo-stanza/          # XEP-0384 v0.9 stanza encode/parse
 │   ├── omemo-session/         # SQLite-backed session store, multi-device
-│   ├── omemo-pep/             # XEP-0163 PEP + tokio-xmpp integration
+│   ├── omemo-pep/             # XEP-0163 PEP + tokio-xmpp integration + MUC
+│   ├── omemo-rs-cli/          # Minimal 1:1 OMEMO 2 chat client (binary)
 │   └── omemo-test-harness/    # Cross-language replay tests (no published crate)
 ├── docs/
 │   ├── architecture.md        # this file

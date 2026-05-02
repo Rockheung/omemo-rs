@@ -22,23 +22,26 @@ Ordering reflects dependencies — do top to bottom.
 | 5 — Group OMEMO | ✅ | `three_clients_groupchat_omemo2_round_trip` (3 omemo-rs in MUC) |
 | 6 — Real-client interop | ⏳ | Conversations + Dino DM/MUC |
 
-**Stages 1–5 complete + 4-FU.1 / .2 / .3 / .4.** Three `omemo-pep`
+**Stages 1–5 complete + 4-FU.1..4 + 5-FU.1..3.** Three `omemo-pep`
 clients exchange OMEMO 2 group-chat messages end-to-end across a real
-Prosody MUC: alice runs X3DH active for bob and carol, sends one
-`<message type='groupchat'>` carrying two `<key rid=>` entries, both
-bob and carol decrypt the same body via `receive_first_message` →
-`receive_followup`. The 1:1 path stays green from Stage 4. Bodies are
-wrapped in XEP-0420 SCE envelopes (`<to>` verified on inbound — peer
-bare for DM, room bare for groupchat); the trust layer records every
-peer device on first sight under TOFU or Manual policy with IK-drift
+Prosody MUC; the 1:1 path stays green from Stage 4. The production
+hardening pass added OPK auto-refill (`replenish_opks` +
+`publish_my_bundle`), an RNG-based identity bootstrap
+(`install_identity_random`), and a `omemo-rs-cli` binary that
+exercises the whole stack as a real CLI client (alice → bob send /
+recv verified against the local Prosody fixture). Bodies are wrapped
+in XEP-0420 SCE envelopes (`<to>` verified on inbound — peer bare for
+DM, room bare for groupchat); the trust layer records every peer
+device on first sight under TOFU or Manual policy with IK-drift
 detection. Production ships StartTLS via `connect_starttls` (rustls +
 aws-lc-rs + native certs) alongside the `connect_plaintext` helper
 used by localhost integration. Crypto layer is byte-equal with the
 Syndace Python reference (replay strategy, ADR-004); transport layer
-is MPL-2.0 xmpp-rs (ADR-007). 62 self-contained tests + 7 Prosody-
-backed integration tests all green. `cargo fmt --all --check`,
-`cargo clippy --workspace --all-targets -D warnings`, `cargo deny
-check` all clean.
+is MPL-2.0 xmpp-rs (ADR-007). 64 self-contained tests + 7 Prosody-
+backed integration tests all green. CI runs fmt / clippy /
+test / deny on every PR (`.github/workflows/ci.yml`) and a
+`cargo test -- --ignored` job spins up Prosody in Docker on push +
+weekly cron (`integration.yml`).
 
 ---
 
@@ -418,6 +421,54 @@ and groupchat fan-out.
       Conversations" but the Conversations leg requires a different
       gate environment and properly belongs to the external-client
       stage.
+
+## Stage 5 follow-ups (production hardening)
+
+These don't gate Stage 5 — the gate is green — but they tighten up
+the ergonomics and durability of the production path. Roughly in
+order of landing.
+
+### 5-FU.1 — OPK auto-refill + bundle republish ✅
+
+- [x] `Store::count_unconsumed_opks()`, `Store::next_opk_id()` —
+      pool inspection helpers.
+- [x] `omemo-pep::store::replenish_opks(store, target, rng)` —
+      tops up the OPK pool to `target` unconsumed entries. Generic
+      over `RngCore` so production can pass `OsRng` and tests can
+      pass any seedable RNG.
+- [x] `omemo-pep::store::publish_my_bundle(store, client, device_id)`
+      — convenience wrapper that rebuilds the stanza-level bundle
+      from the (refreshed) store and republishes via PEP. Pair with
+      `replenish_opks` after every KEX-tagged inbound.
+- [x] OPK ids are grow-only (`next_opk_id = MAX(id) + 1` over the
+      whole `prekey` table, including consumed rows) so the spec's
+      consume-once invariant is respected even across refills.
+
+### 5-FU.2 — `install_identity_random` ✅
+
+- [x] Production-side counterpart to `install_identity` /
+      `IdentitySeed`. Draws every secret from `RngCore` (typical:
+      `rand_core::OsRng`) and parameterises the OPK pool size so
+      callers can match XEP-0384 §5.3.2's "≥ 100" recommendation.
+
+### 5-FU.3 — `omemo-rs-cli` minimal client binary ✅
+
+- [x] New workspace member `omemo-rs-cli` (path
+      `crates/omemo-rs-cli/`, binary `omemo-rs-cli`). Three
+      subcommands — `init` / `send --peer ... --peer-device ...
+      --body ...` / `recv --timeout`. Defaults to `connect_starttls`;
+      falls back to `--insecure-tcp <host:port>` for localhost.
+- [x] First run: `install_identity_random(opk_count)` +
+      `replenish_opks` + `publish_device_list` +
+      `publish_my_bundle`.
+- [x] Subsequent run: store reused; bundle republished on each
+      connect (idempotent on PEP side).
+- [x] `recv` refills + republishes after consuming an OPK so the
+      bundle stays at target capacity.
+- [x] Trust hard-coded to TOFU; production callers will eventually
+      expose a flag and persist explicit user decisions.
+- [x] End-to-end verified against the local Prosody fixture:
+      muc_a → muc_b round-trip recovers the body bytes.
 
 ## Stage 6 — Real-Client Interop
 
