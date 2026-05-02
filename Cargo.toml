@@ -9,6 +9,7 @@ members = [
     "crates/omemo-session",
     "crates/omemo-pep",
     "crates/omemo-test-harness",
+    "crates/omemo-rs-cli",
 ]
 
 [workspace.package]
@@ -56,6 +57,9 @@ tokio-xmpp = { version = "5", default-features = false, features = ["insecure-tc
 xmpp-parsers = "0.22"
 jid = "0.12"
 futures-util = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
 
 # Test
 proptest = "1"

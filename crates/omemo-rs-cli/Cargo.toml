@@ -1,0 +1,23 @@
+[package]
+name = "omemo-rs-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Minimal 1:1 OMEMO 2 chat CLI built on omemo-pep — production-style usage example."
+
+[[bin]]
+name = "omemo-rs-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+rand_core = { workspace = true }
+futures-util = { workspace = true }
+xmpp-parsers = { workspace = true }
+
+omemo-pep = { path = "../omemo-pep" }
+omemo-twomemo = { path = "../omemo-twomemo" }
+omemo-doubleratchet = { path = "../omemo-doubleratchet" }
