@@ -21,3 +21,6 @@ xmpp-parsers = { workspace = true }
 omemo-pep = { path = "../omemo-pep" }
 omemo-twomemo = { path = "../omemo-twomemo" }
 omemo-doubleratchet = { path = "../omemo-doubleratchet" }
+
+[dev-dependencies]
+tempfile = "3"

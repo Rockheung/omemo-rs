@@ -15,9 +15,16 @@ modules_enabled = {
     -- Bot/contact comfort
     "carbons", "private", "blocklist",
     "version", "uptime", "time", "ping",
-    -- PEP/PubSub for OMEMO 2 device-list and bundle nodes
+    -- PEP/PubSub for OMEMO 2 device-list and bundle nodes.
+    -- NOTE: do *not* also enable `pep_simple`. In Prosody 13 it
+    -- intercepts publish requests and silently drops the XEP-0060
+    -- `<publish-options>` data form, leaving the PEP node at its
+    -- default `access_model = presence-required` — which makes
+    -- `fetch_bundle` fail with `presence-subscription-required`
+    -- the first time a peer (without an active subscription)
+    -- tries to read it. The full `pep` module supports
+    -- publish-options correctly.
     "pep",
-    "pep_simple",
 }
 
 modules_disabled = {

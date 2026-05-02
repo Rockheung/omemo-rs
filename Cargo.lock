@@ -1312,6 +1312,7 @@ dependencies = [
  "omemo-pep",
  "omemo-twomemo",
  "rand_core 0.6.4",
+ "tempfile",
  "tokio",
  "xmpp-parsers",
 ]
