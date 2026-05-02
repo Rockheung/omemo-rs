@@ -85,8 +85,10 @@ enum Cmd {
     Send {
         #[arg(long, value_name = "BARE_JID")]
         peer: String,
+        /// Peer device id. If omitted, the first device in the
+        /// peer's published `urn:xmpp:omemo:2:devices` list is used.
         #[arg(long, value_name = "u32")]
-        peer_device: u32,
+        peer_device: Option<u32>,
         /// Message body (UTF-8).
         #[arg(long)]
         body: String,
@@ -241,7 +243,7 @@ async fn run_send(
     bare_jid: &BareJid,
     store_path: &std::path::Path,
     peer_jid_str: &str,
-    peer_device_id: u32,
+    peer_device_id_opt: Option<u32>,
     body: &str,
 ) -> Result<()> {
     let mut store = open_store(store_path)?;
@@ -253,6 +255,24 @@ async fn run_send(
     await_online(&mut client).await?;
     announce_presence(&mut client).await?;
     publish_identity(&mut client, &store, device_id).await?;
+
+    let peer_device_id = match peer_device_id_opt {
+        Some(id) => id,
+        None => {
+            // Auto-discover: first device in the peer's
+            // `urn:xmpp:omemo:2:devices` list. Useful when the peer
+            // generated its device id at random (typical for any
+            // OMEMO 2 implementation that follows XEP-0384's
+            // device-id-is-an-opaque-int rule).
+            let list = fetch_device_list(&mut client, Some(peer_jid.clone()))
+                .await
+                .context("fetch peer device list (--peer-device omitted)")?;
+            list.devices
+                .first()
+                .ok_or_else(|| anyhow!("peer has an empty device list"))?
+                .id
+        }
+    };
 
     // Need a session for `(peer, peer_device_id)` before encrypt_to_peer
     // can run. If absent, fetch the bundle + bootstrap_active.
