@@ -31,6 +31,12 @@ fn repo_root() -> PathBuf {
 }
 
 fn python_bin() -> PathBuf {
+    // Local development uses the venv shared with the fixture
+    // pipeline. CI runners (`integration.yml`) point this at
+    // their own system Python via `$OMEMO_RS_PYTHON`.
+    if let Some(p) = std::env::var_os("OMEMO_RS_PYTHON") {
+        return PathBuf::from(p);
+    }
     repo_root().join("test-vectors/.venv/bin/python")
 }
 
