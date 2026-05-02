@@ -20,28 +20,32 @@ Ordering reflects dependencies — do top to bottom.
 | 3 — `omemo-session` | ✅ | persist/restart 1:1 round-trip |
 | 4 — `omemo-pep` | ✅ | alice ↔ bob 3-message exchange over real Prosody (`gate.rs`) |
 | 5 — Group OMEMO | ✅ | `three_clients_groupchat_omemo2_round_trip` (3 omemo-rs in MUC) |
-| 6 — Real-client interop | ⏳ | Conversations + Dino DM/MUC |
+| 6.1 — python-omemo cross-impl | ✅ | `cargo test -p omemo-rs-cli --test python_interop -- --ignored` (both directions) |
+| 6.2 — Conversations / Dino | ⏳ | manual; uses `omemo-rs-cli` against the same Prosody |
 
-**Stages 1–5 complete + 4-FU.1..4 + 5-FU.1..3.** Three `omemo-pep`
-clients exchange OMEMO 2 group-chat messages end-to-end across a real
-Prosody MUC; the 1:1 path stays green from Stage 4. The production
-hardening pass added OPK auto-refill (`replenish_opks` +
-`publish_my_bundle`), an RNG-based identity bootstrap
-(`install_identity_random`), and a `omemo-rs-cli` binary that
-exercises the whole stack as a real CLI client (alice → bob send /
-recv verified against the local Prosody fixture). Bodies are wrapped
-in XEP-0420 SCE envelopes (`<to>` verified on inbound — peer bare for
-DM, room bare for groupchat); the trust layer records every peer
-device on first sight under TOFU or Manual policy with IK-drift
-detection. Production ships StartTLS via `connect_starttls` (rustls +
-aws-lc-rs + native certs) alongside the `connect_plaintext` helper
-used by localhost integration. Crypto layer is byte-equal with the
-Syndace Python reference (replay strategy, ADR-004); transport layer
-is MPL-2.0 xmpp-rs (ADR-007). 64 self-contained tests + 7 Prosody-
-backed integration tests all green. CI runs fmt / clippy /
-test / deny on every PR (`.github/workflows/ci.yml`) and a
-`cargo test -- --ignored` job spins up Prosody in Docker on push +
-weekly cron (`integration.yml`).
+**Stages 1–5 + 4-FU.1..4 + 5-FU.1..4 + Stage 6.1 complete.**
+Three `omemo-pep` clients exchange OMEMO 2 group-chat messages
+end-to-end across a real Prosody MUC; the 1:1 path stays green from
+Stage 4; **omemo-rs ↔ python-omemo (Syndace's reference Python
+stack) cross-implementation interop passes in both directions** as
+part of CI. The production hardening pass added OPK auto-refill,
+RNG-based identity bootstrap, and the `omemo-rs-cli` binary; the
+interop test suite spawns the binary alongside a slixmpp +
+python-omemo client and asserts the body bytes round-trip. Bodies
+are wrapped in XEP-0420 SCE envelopes (`<to>` verified on inbound —
+peer bare for DM, room bare for groupchat); the trust layer records
+every peer device on first sight under TOFU or Manual policy with
+IK-drift detection. Production ships StartTLS via
+`connect_starttls` (rustls + aws-lc-rs + native certs) alongside
+the `connect_plaintext` helper used by localhost integration.
+Crypto layer is byte-equal with the Syndace Python reference
+(replay strategy, ADR-004); transport layer is MPL-2.0 xmpp-rs
+(ADR-007). 64 self-contained tests + 10 Prosody-backed integration
+tests all green (8 same-process + 2 cross-impl). CI runs fmt /
+clippy / test / deny on every PR (`ci.yml`) and a
+`cargo test -- --ignored` job spins up Prosody in Docker plus a
+Python venv with python-omemo on push + weekly cron
+(`integration.yml`).
 
 ---
 
@@ -471,6 +475,39 @@ order of landing.
       muc_a → muc_b round-trip recovers the body bytes.
 
 ## Stage 6 — Real-Client Interop
+
+### 6.1 — python-omemo (Syndace reference) ✅ automated
+
+The interop pair we can drive ourselves end to end. Same library
+the fixture pipeline already uses, so the test exercises **two
+genuinely different OMEMO 2 codebases** against each other.
+
+- [x] `test-vectors/integration/python-interop/interop_client.py`:
+      slixmpp + python-omemo OMEMO 2 client (`send` / `recv`). Works
+      around slixmpp-omemo 2.1's missing SCE plugin: the recv side
+      catches `NotImplementedError` and parses the leaked
+      plaintext envelope; the send side bypasses
+      `xep_0384.encrypt_message` and goes straight to
+      `SessionManager.encrypt` with a hand-built XEP-0420 envelope.
+- [x] `crates/omemo-rs-cli/tests/python_interop.rs`: spawns the
+      CLI binary + the python script and asserts both directions
+      decrypt the same body bytes (`rust_send_python_recv` and
+      `python_send_rust_recv`).
+- [x] `.github/workflows/integration.yml` runs both interop tests
+      after the existing Prosody-only suite. Stage 6 wire-format
+      drift breaks CI on every PR.
+- [x] `pyint_a` / `pyint_b` Prosody accounts (Dockerfile entrypoint).
+
+### 6.2 — Conversations / Dino (manual)
+
+External-client interop requires a phone or a desktop XMPP client
+on the test bench, so it's not on the automated path. The
+`omemo-rs-cli` binary is the right manual driver — point it at the
+same Prosody account as Conversations / Dino and exchange chat
+messages. Confirmed-working test for Stage 6.1 already proves the
+wire format byte-equality with the spec authority's reference
+stack, so a 6.2 failure would be a Conversations/Dino-specific
+quirk rather than a spec violation on our side.
 
 - [ ] DM: Conversations 2.x → omemo-rs
 - [ ] DM: omemo-rs → Conversations

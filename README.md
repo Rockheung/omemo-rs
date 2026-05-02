@@ -31,22 +31,27 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 3 | `omemo-session` | ✅ | identity + bundle + persist + restart, no re-keying |
 | 4 | `omemo-pep` | ✅ | alice ↔ bob 3 messages over real Prosody (`gate.rs`) |
 | 5 | Group OMEMO (MUC) | ✅ | 3 omemo-pep clients groupchat round-trip on real Prosody MUC (`tests/muc.rs`) |
-| 6 | Real-client interop | ⏳ | needs Conversations / Dino |
+| 6.1 | python-omemo cross-impl | ✅ | omemo-rs ↔ Syndace python-omemo bidirectional via `tests/python_interop.rs` |
+| 6.2 | Conversations / Dino | ⏳ | manual; drive `omemo-rs-cli` against same Prosody |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
 fixture. `cargo test --workspace` passes 64 unit/replay tests; an
-additional 7 integration tests gate the XMPP path against a local
-Prosody container (run with `-- --ignored`). Stages 4 + 5 + the
-4-FU.1..4 / 5-FU.1..3 follow-ups are done: alice ↔ bob 1:1 *and*
-alice → bob+carol groupchat round-trip on a real Prosody MUC, the
-gate flows entirely through `omemo-session`'s SQLite store, message
-bodies are wrapped in XEP-0420 SCE envelopes with `<to>`-verification
-on inbound (peer bare for DM, room bare for groupchat), every peer
-device is recorded under TOFU or Manual trust policy with IK-drift
-detection, and production deployments ship StartTLS via
-`connect_starttls` (rustls + aws-lc-rs + native cert validation).
-The new `omemo-rs-cli` binary (`crates/omemo-rs-cli/`) exercises
-the production API as a real CLI client.
+additional 10 integration tests gate the XMPP path against a local
+Prosody container (run with `-- --ignored`). Stages 4 + 5 + 6.1 +
+the 4-FU.1..4 / 5-FU.1..4 follow-ups are done: alice ↔ bob 1:1 and
+alice → bob+carol groupchat round-trip on a real Prosody MUC, plus
+**omemo-rs ↔ Syndace's python-omemo cross-implementation interop in
+both directions** (Stage 6.1 — `cargo test -p omemo-rs-cli --test
+python_interop`). The gate flows entirely through `omemo-session`'s
+SQLite store, message bodies are wrapped in XEP-0420 SCE envelopes
+with `<to>`-verification on inbound (peer bare for DM, room bare
+for groupchat), every peer device is recorded under TOFU or Manual
+trust policy with IK-drift detection, and production deployments
+ship StartTLS via `connect_starttls` (rustls + aws-lc-rs + native
+cert validation). The `omemo-rs-cli` binary
+(`crates/omemo-rs-cli/`) exercises the production API as a real
+CLI client and is the manual driver for Stage 6.2 (Conversations /
+Dino interop).
 
 ## Workspace layout
 
