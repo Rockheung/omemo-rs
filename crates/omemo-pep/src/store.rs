@@ -167,6 +167,49 @@ pub fn install_identity(
     Ok(identity)
 }
 
+/// Production-side counterpart to [`install_identity`]: draws every
+/// secret from `rng` (typical: `rand_core::OsRng`) instead of taking
+/// fixed seeds. The SPK gets `id = 1`; OPKs get `1..=opk_count`.
+///
+/// `opk_count` should match the bundle size you're willing to publish.
+/// XEP-0384 §5.3.2 recommends "at least 100" so a peer storm doesn't
+/// drain the pool before [`replenish_opks`] gets a chance to top it
+/// back up.
+pub fn install_identity_random<R: rand_core::RngCore>(
+    store: &mut Store,
+    bare_jid: &str,
+    device_id: u32,
+    opk_count: u32,
+    rng: &mut R,
+) -> Result<OwnIdentity, StoreFlowError> {
+    let mut ik_seed = [0u8; 32];
+    let mut spk_priv = [0u8; 32];
+    let mut spk_sig_nonce = [0u8; 64];
+    rng.fill_bytes(&mut ik_seed);
+    rng.fill_bytes(&mut spk_priv);
+    rng.fill_bytes(&mut spk_sig_nonce);
+
+    let mut opks: Vec<(u32, [u8; 32])> = Vec::with_capacity(opk_count as usize);
+    for id in 1..=opk_count {
+        let mut priv_key = [0u8; 32];
+        rng.fill_bytes(&mut priv_key);
+        opks.push((id, priv_key));
+    }
+
+    install_identity(
+        store,
+        &IdentitySeed {
+            bare_jid,
+            device_id,
+            ik_seed,
+            spk_id: 1,
+            spk_priv,
+            spk_sig_nonce,
+            opks: &opks,
+        },
+    )
+}
+
 /// Reconstruct the in-memory `X3dhState` from the current SPK and the
 /// unconsumed OPK pool.
 pub fn x3dh_state_from_store(store: &Store) -> Result<X3dhState, StoreFlowError> {
@@ -1076,6 +1119,33 @@ mod tests {
         // commit_first_inbound.
         let opk = bob.get_opk(201).unwrap().unwrap();
         assert!(!opk.consumed, "IK-mismatch must not burn the OPK");
+    }
+
+    #[test]
+    fn install_identity_random_round_trips_into_store_and_bundle() {
+        use rand_core::OsRng;
+
+        let mut store = fresh_store();
+        let identity =
+            install_identity_random(&mut store, "alice@example.org", 27_001, 16, &mut OsRng)
+                .expect("install_identity_random");
+        assert_eq!(identity.bare_jid, "alice@example.org");
+        assert_eq!(identity.device_id, 27_001);
+
+        // SPK lands with id=1; OPKs land with ids 1..=16.
+        assert!(store.current_spk().unwrap().is_some());
+        assert_eq!(store.count_unconsumed_opks().unwrap(), 16);
+        assert_eq!(store.next_opk_id().unwrap(), 17);
+
+        // The reconstructed X3dhState + Bundle round-trip cleanly.
+        let state = x3dh_state_from_store(&store).expect("state");
+        assert_eq!(state.pre_keys.len(), 16);
+        let bundle = bundle_from_store(&store).expect("bundle");
+        assert_eq!(bundle.spk.id, 1);
+        assert_eq!(bundle.spk.pub_key.len(), 32);
+        assert_eq!(bundle.spks.len(), 64);
+        assert_eq!(bundle.ik.len(), 32);
+        assert_eq!(bundle.prekeys.len(), 16);
     }
 
     #[test]
