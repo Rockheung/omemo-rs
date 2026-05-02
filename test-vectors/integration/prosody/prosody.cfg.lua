@@ -41,3 +41,20 @@ log = {
 
 VirtualHost "localhost"
     enabled = true
+
+-- MUC component for Stage 5 (Group OMEMO) integration tests.
+-- Rooms are created on first join (`restrict_room_creation = false`).
+-- We don't gate on whitelisted creators because this is a localhost-only
+-- test fixture; production deployments should restrict.
+Component "conference.localhost" "muc"
+    name = "omemo-rs test MUC"
+    restrict_room_creation = false
+    -- Newly-created rooms start unlocked (XEP-0045 §10.1.2): we don't
+    -- want the integration tests to have to send a muc#owner instant-
+    -- room IQ before a second occupant can join. Public, non-anonymous
+    -- by default so MUC OMEMO can resolve real JIDs.
+    muc_room_locking = false
+    muc_room_default_public = true
+    muc_room_default_members_only = false
+    muc_room_default_public_jids = true
+    modules_enabled = { "muc_mam" }
