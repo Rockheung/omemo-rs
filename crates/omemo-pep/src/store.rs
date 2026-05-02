@@ -81,6 +81,8 @@ pub enum StoreFlowError {
         stored_hex: String,
         got_hex: String,
     },
+    #[error("PEP transport: {0}")]
+    Pep(String),
 }
 
 /// Caller-supplied policy for incorporating new peer devices into the
@@ -238,6 +240,69 @@ pub fn bootstrap_and_save_active(
     )?;
     store.save_session(peer_jid, peer_device_id, &session)?;
     Ok(kex)
+}
+
+/// Top up the OPK pool to at least `target_unconsumed` unconsumed
+/// entries. Each OPK consumes XEP-0384 §5.3.2's "consume-once"
+/// invariant, so a finite pool drains over time as peers run X3DH
+/// active against the published bundle. Production callers should run
+/// this on a schedule (e.g. on every PEP item-deletion notification
+/// for our own bundles, or simply periodically) and then call
+/// [`publish_my_bundle`] so the freshly-minted public halves reach
+/// peers via the PEP node.
+///
+/// `rng` provides 32 fresh bytes per new OPK priv. A
+/// CSPRNG-equivalent RNG is required — passing `OsRng` from `rand`
+/// is the typical production choice; tests can pass any
+/// deterministic seed-able RNG.
+///
+/// Returns the number of OPKs actually inserted (`0` if the pool was
+/// already at or above target).
+pub fn replenish_opks<R: rand_core::RngCore>(
+    store: &mut Store,
+    target_unconsumed: u32,
+    rng: &mut R,
+) -> Result<u32, StoreFlowError> {
+    let current = store.count_unconsumed_opks()?;
+    if current >= target_unconsumed {
+        return Ok(0);
+    }
+    let to_add = target_unconsumed - current;
+    let first_id = store.next_opk_id()?;
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    for next_id in first_id..first_id + to_add {
+        let mut priv_key = [0u8; 32];
+        rng.fill_bytes(&mut priv_key);
+        let pk = PreKeyPair { priv_key };
+        store.put_opk(&StoredOpk {
+            id: next_id,
+            priv_key,
+            pub_key: pk.pub_key(),
+            consumed: false,
+            created_at: now_secs,
+        })?;
+    }
+    Ok(to_add)
+}
+
+/// Build the stanza-level [`Bundle`] from the store and publish it to
+/// our own `urn:xmpp:omemo:2:bundles` PEP node under the given device
+/// id. Convenience wrapper for the typical "after refilling OPKs,
+/// republish the bundle" flow — `bundle_from_store` always reflects
+/// the current pool, so this picks up the freshly-minted entries.
+pub async fn publish_my_bundle(
+    store: &Store,
+    client: &mut tokio_xmpp::Client,
+    own_device_id: u32,
+) -> Result<(), StoreFlowError> {
+    let bundle = bundle_from_store(store)?;
+    crate::pep::publish_bundle(client, own_device_id, &bundle)
+        .await
+        .map_err(|e| StoreFlowError::Pep(e.to_string()))?;
+    Ok(())
 }
 
 /// Refuse encrypt / decrypt to a device the user has explicitly marked
@@ -1011,5 +1076,42 @@ mod tests {
         // commit_first_inbound.
         let opk = bob.get_opk(201).unwrap().unwrap();
         assert!(!opk.consumed, "IK-mismatch must not burn the OPK");
+    }
+
+    #[test]
+    fn replenish_opks_tops_up_to_target_and_skips_when_already_above() {
+        use rand_core::OsRng;
+
+        let mut store = fresh_store();
+        install_identity(&mut store, &alice_seed()).unwrap();
+        // alice_seed installs 2 OPKs.
+        assert_eq!(store.count_unconsumed_opks().unwrap(), 2);
+        assert_eq!(store.next_opk_id().unwrap(), 103, "next id is max(102) + 1");
+
+        // Refill to 5 — should add exactly 3.
+        let added = replenish_opks(&mut store, 5, &mut OsRng).unwrap();
+        assert_eq!(added, 3);
+        assert_eq!(store.count_unconsumed_opks().unwrap(), 5);
+        assert_eq!(store.next_opk_id().unwrap(), 106);
+
+        // Refill again with the same target — should add 0.
+        let added = replenish_opks(&mut store, 5, &mut OsRng).unwrap();
+        assert_eq!(added, 0);
+
+        // Consume one, refill to 5 — should add 1, and next_opk_id keeps
+        // climbing (consumed rows count toward MAX(id), so a new id is
+        // not reused).
+        store.consume_opk(101).unwrap();
+        assert_eq!(store.count_unconsumed_opks().unwrap(), 4);
+        let added = replenish_opks(&mut store, 5, &mut OsRng).unwrap();
+        assert_eq!(added, 1);
+        assert_eq!(store.count_unconsumed_opks().unwrap(), 5);
+        assert_eq!(store.next_opk_id().unwrap(), 107);
+
+        // The replenished OPKs round-trip into the bundle that
+        // `bundle_from_store` produces, so a subsequent
+        // `publish_my_bundle` exposes them on PEP.
+        let bundle = bundle_from_store(&store).unwrap();
+        assert_eq!(bundle.prekeys.len(), 5);
     }
 }

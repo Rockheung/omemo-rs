@@ -450,6 +450,30 @@ impl Store {
         Ok(out)
     }
 
+    /// Number of unconsumed OPKs currently in the pool. Used by the
+    /// refill helper in `omemo-pep::store` to decide whether to mint
+    /// fresh ones.
+    pub fn count_unconsumed_opks(&self) -> Result<u32, SessionStoreError> {
+        let n: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM prekey WHERE consumed = 0", [], |r| {
+                    r.get(0)
+                })?;
+        Ok(n as u32)
+    }
+
+    /// `MAX(id) + 1` over the entire `prekey` table — including
+    /// already-consumed rows, so a refilled OPK never collides with
+    /// a previously-published one (XEP-0384 §5.3.2 forbids id reuse).
+    pub fn next_opk_id(&self) -> Result<u32, SessionStoreError> {
+        let id: i64 =
+            self.conn
+                .query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM prekey", [], |r| {
+                    r.get(0)
+                })?;
+        Ok(id as u32)
+    }
+
     // ---- device list ------------------------------------------------------
 
     pub fn upsert_device(

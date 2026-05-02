@@ -40,8 +40,8 @@ pub use pep::{
 };
 pub use store::{
     bootstrap_and_save_active, bundle_from_store, encrypt_to_peer, encrypt_to_peers,
-    install_identity, receive_first_message, receive_followup, x3dh_state_from_store, IdentitySeed,
-    InboundEnvelope, PeerSpec, StoreFlowError, TrustPolicy,
+    install_identity, publish_my_bundle, receive_first_message, receive_followup, replenish_opks,
+    x3dh_state_from_store, IdentitySeed, InboundEnvelope, PeerSpec, StoreFlowError, TrustPolicy,
 };
 pub use wire::{send_encrypted, wait_for_encrypted, WireError};
 
