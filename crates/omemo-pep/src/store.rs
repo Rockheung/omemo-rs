@@ -494,8 +494,12 @@ fn locate_our_key<'a>(
 /// KEX-tagged inbound (`<key kex="true">`): peek the KEX to find which
 /// SPK/OPK ids it references, look those up in the store, run X3DH
 /// passive + ratchet decrypt + SCE open, parse and verify the
-/// XEP-0420 envelope (`<to>` must match `our_jid`), then atomically
-/// consume the OPK and persist the new session.
+/// XEP-0420 envelope (`<to>` must match `expected_envelope_to`), then
+/// atomically consume the OPK and persist the new session.
+///
+/// `expected_envelope_to` is what the envelope's `<to>` field has to
+/// say. For a 1:1 chat that's our own bare JID; for a MUC group chat
+/// it's the room's bare JID (XEP-0384 §6.1 + §4.5).
 ///
 /// `policy` decides what to do on first sight of a peer device: TOFU
 /// records it as `Trusted`, Manual records it as `Pending` and the
@@ -511,6 +515,7 @@ pub fn receive_first_message(
     encrypted: &Encrypted,
     our_jid: &str,
     our_device_id: u32,
+    expected_envelope_to: &str,
     sender_jid: &str,
     sender_device_id: u32,
     policy: TrustPolicy,
@@ -565,25 +570,27 @@ pub fn receive_first_message(
         priv_provider,
     )?;
 
-    let envelope = parse_envelope_inbound(&envelope_bytes, our_jid)?;
+    let envelope = parse_envelope_inbound(&envelope_bytes, expected_envelope_to)?;
     store.commit_first_inbound(sender_jid, sender_device_id, consumed_opk_id, &session)?;
     Ok(envelope)
 }
 
 /// Non-KEX inbound (`<key kex="false">`): load the session for
 /// `(sender_jid, sender_device_id)`, decrypt the SCE payload, parse
-/// and verify the XEP-0420 envelope (`<to>` must match `our_jid`),
-/// persist the advanced session.
+/// and verify the XEP-0420 envelope (`<to>` must match
+/// `expected_envelope_to`), persist the advanced session.
 ///
 /// Refuses `(jid, device_id)` rows in `Untrusted` state. Pending and
 /// never-seen devices are allowed (KEX inbound is the only path that
 /// could record a new device, since it is the only path that carries
 /// the peer's IK on the wire).
+#[allow(clippy::too_many_arguments)]
 pub fn receive_followup(
     store: &mut Store,
     encrypted: &Encrypted,
     our_jid: &str,
     our_device_id: u32,
+    expected_envelope_to: &str,
     sender_jid: &str,
     sender_device_id: u32,
     priv_provider: Box<dyn DhPrivProvider>,
@@ -601,7 +608,7 @@ pub fn receive_followup(
         })?;
     let mut session = TwomemoSession::from_snapshot(snapshot, priv_provider);
     let envelope_bytes = decrypt_message(encrypted, our_jid, our_device_id, &mut session)?;
-    let envelope = parse_envelope_inbound(&envelope_bytes, our_jid)?;
+    let envelope = parse_envelope_inbound(&envelope_bytes, expected_envelope_to)?;
     store.save_session(sender_jid, sender_device_id, &session)?;
     Ok(envelope)
 }
@@ -721,6 +728,7 @@ mod tests {
             &m1,
             "bob@example.org",
             2001,
+            "bob@example.org",
             "alice@example.org",
             1001,
             TrustPolicy::Tofu,
@@ -757,6 +765,7 @@ mod tests {
             &m2,
             "bob@example.org",
             2001,
+            "bob@example.org",
             "alice@example.org",
             1001,
             fixed_priv_provider(vec![]),
@@ -799,6 +808,7 @@ mod tests {
             &m1,
             "bob@example.org",
             2001,
+            "bob@example.org",
             "alice@example.org",
             1001,
             TrustPolicy::Manual,
@@ -834,6 +844,7 @@ mod tests {
             &m2,
             "bob@example.org",
             2001,
+            "bob@example.org",
             "alice@example.org",
             1001,
             fixed_priv_provider(vec![]),
@@ -875,6 +886,7 @@ mod tests {
             &m1,
             "bob@example.org",
             2001,
+            "bob@example.org",
             "alice@example.org",
             1001,
             TrustPolicy::Tofu,
@@ -903,6 +915,7 @@ mod tests {
             &m2,
             "bob@example.org",
             2001,
+            "bob@example.org",
             "alice@example.org",
             1001,
             fixed_priv_provider(vec![]),
@@ -981,6 +994,7 @@ mod tests {
             &m1,
             "bob@example.org",
             2001,
+            "bob@example.org",
             "alice@example.org",
             1001,
             TrustPolicy::Tofu,
