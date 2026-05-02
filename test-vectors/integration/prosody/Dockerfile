@@ -34,11 +34,28 @@ WORKDIR /var/lib/prosody
 # Idempotent user creation, then exec into Prosody. `|| true` because
 # `prosodyctl register` exits non-zero when the user already exists.
 #
-# Account allocation (one per test binary, avoids same-JID reconnect
-# flakes when cargo runs binaries in parallel):
+# Account allocation (one set per integration-test scenario, so cargo
+# can run all test binaries in parallel without same-JID reconnect
+# flakes — a single account in two sessions makes Prosody disconnect
+# both):
 #   alice   — `tests/connect.rs`
 #   bob     — `tests/pep.rs::bob_publishes_...`
 #   charlie — `tests/pep.rs::charlie_publishes_...`
-#   gate_a  — `tests/gate.rs` (active / alice role)
-#   gate_b  — `tests/gate.rs` (passive / bob role)
-ENTRYPOINT ["sh", "-c", "prosodyctl register alice localhost alicepass || true; prosodyctl register bob localhost bobpass || true; prosodyctl register charlie localhost charliepass || true; prosodyctl register gate_a localhost gateapass || true; prosodyctl register gate_b localhost gatebpass || true; exec prosody"]
+#   gate_a / gate_b — `tests/gate.rs` (Stage 4 1:1 gate)
+#   muc_a / muc_b   — `tests/muc.rs::two_clients_join_same_room_...` (Stage 5.1)
+#   muc_c / muc_d   — `tests/muc.rs::refresh_pulls_each_occupants_...` (Stage 5.2)
+#   muc_e / muc_f / muc_g — Stage 5.5 group-OMEMO gate (3-client)
+ENTRYPOINT ["sh", "-c", "\
+    prosodyctl register alice localhost alicepass || true; \
+    prosodyctl register bob localhost bobpass || true; \
+    prosodyctl register charlie localhost charliepass || true; \
+    prosodyctl register gate_a localhost gateapass || true; \
+    prosodyctl register gate_b localhost gatebpass || true; \
+    prosodyctl register muc_a localhost mucapass || true; \
+    prosodyctl register muc_b localhost mucbpass || true; \
+    prosodyctl register muc_c localhost muccpass || true; \
+    prosodyctl register muc_d localhost mucdpass || true; \
+    prosodyctl register muc_e localhost mucepass || true; \
+    prosodyctl register muc_f localhost mucfpass || true; \
+    prosodyctl register muc_g localhost mucgpass || true; \
+    exec prosody"]

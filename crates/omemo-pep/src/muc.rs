@@ -35,6 +35,13 @@ pub enum MucError {
     Resource(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("PEP error fetching {jid} device list: {source}")]
+    Pep {
+        jid: String,
+        source: crate::pep::PepError,
+    },
+    #[error("session store: {0}")]
+    Store(#[from] omemo_session::SessionStoreError),
 }
 
 /// One occupant of a MUC room as last reported by the server's
@@ -162,6 +169,75 @@ impl MucRoom {
         };
         client.send_stanza(iq.into()).await?;
         Ok(())
+    }
+
+    /// PEP-fetch the device list for every occupant whose real JID we
+    /// know, persisting each result into `store` via `upsert_device`.
+    /// Occupants without a `real_jid` (anonymous-room participants) are
+    /// silently skipped — without a bare JID we cannot address their
+    /// PEP node. Occupants whose PEP node is empty or returns an error
+    /// (`item-not-found` from peers who haven't published) are skipped
+    /// too; only network-level failures bubble up.
+    ///
+    /// Returns the per-occupant `(BareJid, Vec<device_id>)` so callers
+    /// can decide which devices to fetch bundles for next.
+    ///
+    /// Sequential by design: `tokio_xmpp::Client::send_iq` takes
+    /// `&mut self`, so genuine in-flight concurrency would need a
+    /// connection pool. For bot-sized rooms (≤ ~50 occupants) the
+    /// serial round-trip cost is dominated by network RTT and the
+    /// simpler API is the right trade. The Stage 5 task list keeps
+    /// "bundle-fetch backpressure" as a follow-up if profiling
+    /// motivates it.
+    pub async fn refresh_device_lists(
+        &self,
+        client: &mut Client,
+        store: &mut omemo_session::Store,
+    ) -> Result<Vec<(BareJid, Vec<u32>)>, MucError> {
+        // Look up our own bare JID from the store so we can skip
+        // self-PEP fetches in the loop below: Prosody returns iq-result
+        // with no `from` for self-pubsub queries, which the tokio-xmpp
+        // iq response tracker cannot match when the request was keyed
+        // with `to = Some(self_jid)`. The connection would hang
+        // forever. (See `fetch_device_list` in src/pep.rs for the same
+        // workaround on the publish path.)
+        let our_jid = store
+            .get_identity()
+            .map_err(MucError::Store)?
+            .map(|i| i.bare_jid);
+
+        // Snapshot the real-JID set first — collecting before await
+        // points avoids holding `&self.occupants` across the awaits.
+        let mut targets: Vec<(String, BareJid)> = self
+            .occupants
+            .values()
+            .filter_map(|o| o.real_jid.as_ref().map(|j| (o.nick.clone(), j.clone())))
+            .collect();
+        targets.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        let mut out = Vec::with_capacity(targets.len());
+        for (_nick, jid) in targets {
+            if our_jid.as_deref() == Some(jid.as_str()) {
+                continue;
+            }
+            let list = match crate::pep::fetch_device_list(client, Some(jid.clone())).await {
+                Ok(l) => l,
+                Err(crate::pep::PepError::ServerError(_))
+                | Err(crate::pep::PepError::NoPayload)
+                | Err(crate::pep::PepError::NoDeviceList) => continue,
+                Err(other) => {
+                    return Err(MucError::Pep {
+                        jid: jid.as_str().to_owned(),
+                        source: other,
+                    });
+                }
+            };
+            for device in &list.devices {
+                store.upsert_device(jid.as_str(), device.id, device.label.as_deref())?;
+            }
+            out.push((jid, list.devices.iter().map(|d| d.id).collect()));
+        }
+        Ok(out)
     }
 
     /// Update room state from one inbound `<presence>` stanza.

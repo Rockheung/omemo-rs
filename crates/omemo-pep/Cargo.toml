@@ -25,3 +25,4 @@ omemo-session = { path = "../omemo-session" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+serial_test = "3"
