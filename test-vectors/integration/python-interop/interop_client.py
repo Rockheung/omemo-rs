@@ -219,22 +219,87 @@ class InteropClient(ClientXMPP):
             await self._send_once()
 
     async def _send_once(self) -> None:
+        """Send one OMEMO 2 (twomemo) chat body wrapped in an XEP-0420
+        SCE envelope. Bypasses `xep_0384.encrypt_message` because
+        slixmpp-omemo 2.1.0 doesn't implement SCE on the encrypt
+        side (it skips the `urn:xmpp:omemo:2` namespace entirely and
+        only emits oldmemo) — see the plugin source comment, which
+        ends with `... IF I HAD ONE!!!`. We build the envelope here
+        and call `SessionManager.encrypt` with the envelope bytes
+        directly."""
+
+        import base64
+        import os
+        import xml.etree.ElementTree as ET_std
+        from datetime import datetime, timezone
+
+        import twomemo
+        import twomemo.etree
+
+        # NOTE: Don't `ET_std.register_namespace("", twomemo_ns)` —
+        # ET applies that registration globally, and slixmpp will
+        # then start emitting the outer `<message>` with the
+        # OMEMO 2 namespace as the default and `<message>` itself
+        # under an `ns0:` prefix. Leaving the auto-`ns0:` on
+        # `<encrypted>` is fine: omemo-rs uses minidom's
+        # namespace-aware matching, so the prefix is invisible to
+        # our parser.
+
         assert self.peer is not None and self.body is not None
         xep_0384: XEP_0384 = self["xep_0384"]
-        msg = self.make_message(mto=JID(self.peer), mtype="chat")
-        msg["body"] = self.body
-        messages, errs = await xep_0384.encrypt_message(msg, {JID(self.peer)})
+
+        # Build an XEP-0420 SCE envelope around `<body>`. omemo-rs
+        # verifies `<to>` strictly (XEP-0384 §4.5), so it has to be
+        # the recipient's bare JID. `<rpad>` is base64'd random
+        # bytes per XEP-0420 §3.2.
+        rpad = base64.b64encode(os.urandom(16)).decode()
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body_escaped = (
+            self.body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+        envelope = (
+            '<envelope xmlns="urn:xmpp:sce:1">'
+            f'<content><body xmlns="jabber:client">{body_escaped}</body></content>'
+            f"<rpad>{rpad}</rpad>"
+            f'<time stamp="{ts}"/>'
+            f'<to jid="{self.peer}"/>'
+            f'<from jid="{self.boundjid.bare}"/>'
+            "</envelope>"
+        ).encode("utf-8")
+
+        # Make sure the peer's bundle is in cache (slixmpp-omemo
+        # otherwise lazy-loads on first send).
+        await xep_0384.refresh_device_lists({JID(self.peer)})
+
+        sm = await xep_0384.get_session_manager()
+        omemo_messages, errs = await sm.encrypt(
+            frozenset({self.peer}),
+            {twomemo.twomemo.NAMESPACE: envelope},
+            backend_priority_order=[twomemo.twomemo.NAMESPACE],
+            identifier=None,
+        )
         if errs:
             log.warning("non-critical encrypt errors: %s", errs)
-        if not messages:
-            log.error("encrypt returned no messages — peer has no usable bundle?")
+        if not omemo_messages:
+            log.error("session_manager.encrypt produced 0 messages — peer bundle missing?")
             self.done.set()
             return
-        for namespace, m in messages.items():
-            m["eme"]["namespace"] = namespace
-            m["eme"]["name"] = self["xep_0380"].mechanisms[namespace]
-            m.send()
-        log.info("Sent %d byte body to %s", len(self.body), self.peer)
+
+        sent = 0
+        for omemo_msg in omemo_messages.keys():
+            if omemo_msg.namespace != twomemo.twomemo.NAMESPACE:
+                continue
+            et_elt = twomemo.etree.serialize_message(omemo_msg)
+            msg = self.make_message(mto=JID(self.peer), mtype="chat")
+            msg.xml.append(et_elt)
+            msg.send()
+            sent += 1
+        log.info("Sent %d byte body to %s in %d twomemo message(s)", len(self.body), self.peer, sent)
+        # Let the wire flush before main() disconnects. slixmpp's
+        # `send()` is async-fire-and-forget — without this the
+        # disconnect can race the outgoing TCP write and the message
+        # never reaches the peer.
+        await asyncio.sleep(2)
         self.done.set()
 
     async def message_handler(self, stanza: Message) -> None:

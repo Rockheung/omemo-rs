@@ -6,39 +6,44 @@ This directory has the Python counterpart for the
 uses), so the cross-implementation test exercises **two genuinely
 different OMEMO 2 codebases** — Rust against Python.
 
-## What's verified
+## What's verified — both directions ✅
 
-* **Rust → Python** end-to-end: omemo-rs-cli encrypts a chat body,
-  publishes its bundle, sends a `<message>` stanza. python-omemo
-  parses the OMEMO 2 element, runs X3DH passive + DoubleRatchet
-  decrypt, recovers the SCE envelope. The script unwraps the
-  XEP-0420 envelope, prints the body to stdout. **Wire format,
-  KEX bootstrap, ratchet decrypt, SCE envelope** all interoperate.
+* **Rust → Python**: omemo-rs-cli encrypts a chat body, publishes
+  its bundle, sends a `<message>` stanza. python-omemo parses the
+  OMEMO 2 element, runs X3DH passive + DoubleRatchet decrypt,
+  recovers the SCE envelope. The script unwraps the XEP-0420
+  envelope and prints the body to stdout.
+* **Python → Rust**: the interop client builds the XEP-0420 SCE
+  envelope itself (slixmpp-omemo's plugin doesn't), drives X3DH
+  active + DoubleRatchet encrypt via `SessionManager.encrypt`, and
+  hands the resulting `<encrypted xmlns='urn:xmpp:omemo:2'>` element
+  to slixmpp's stanza writer. omemo-rs-cli's `recv` decrypts and
+  prints the body. **Wire format, KEX bootstrap, ratchet step, SCE
+  envelope, `<to>` verification** all interoperate in both
+  directions.
 
-## Known limitation (Python side)
+## What we worked around in slixmpp-omemo 2.1.0
 
-`slixmpp-omemo` 2.1.0 doesn't implement the XEP-0420 SCE plugin yet:
+The plugin doesn't implement the XEP-0420 SCE side yet:
 
 * On **decrypt**, it raises `NotImplementedError("SCE not supported
   yet. Plaintext: ...")` and leaks the plaintext bytes through the
   exception message. The interop client catches this and parses the
-  envelope itself — that's enough for the rust→python check to
-  pass.
-* On **encrypt**, it explicitly skips the `urn:xmpp:omemo:2`
-  namespace (xep_0384.py line 1049: `# Here I would prepare the
-  plaintext for omemo:2 using my SCE plugin ... IF I HAD ONE!!!`).
-  The Python side only emits messages on the legacy
-  `eu.siacs.conversations.axolotl` namespace, which omemo-rs does
-  not implement (we deliberately stay OMEMO-2-only — see ADR-002).
+  envelope itself.
+* On **encrypt**, the plugin explicitly skips the
+  `urn:xmpp:omemo:2` namespace (xep_0384.py line 1049: `# Here I
+  would prepare the plaintext for omemo:2 using my SCE plugin ...
+  IF I HAD ONE!!!`). The interop client therefore bypasses
+  `xep_0384.encrypt_message` and goes straight to
+  `SessionManager.encrypt` with our hand-built envelope bytes +
+  `backend_priority_order=[twomemo.twomemo.NAMESPACE]`, then
+  `twomemo.etree.serialize_message` on each result, appended to a
+  fresh `<message type='chat'>` and sent.
 
-The python→rust direction therefore needs the SCE envelope to be
-built explicitly in the interop client (calling
-`SessionManager.encrypt` with an envelope-bytes plaintext +
-`backend_priority_order=[twomemo.NAMESPACE]`). That work is
-deferred — the wire-format byte-equality is already established by
-both directions of the fixture replay tests in `omemo-test-harness`.
+omemo-rs (our implementation) speaks XEP-0384 v0.9 + XEP-0420
+correctly; the workarounds are entirely on the Python side.
 
-## Running it manually
+## Running it manually (rust → python)
 
 ```bash
 # Bring up Prosody (registers `pyint_a` / `pyint_b` accounts).
@@ -74,6 +79,41 @@ OMEMO_RS_STORE_DIR=/tmp/interop ./target/debug/omemo-rs-cli \
 
 wait                 # Python prints `pyint_a@localhost/...: hello python from rust`
 tail -5 /tmp/py.log
+```
+
+## Running it manually (python → rust)
+
+```bash
+# Bring up Prosody.
+docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+
+# Initialise the rust side (alice in this scenario receives).
+cargo build -p omemo-rs-cli
+OMEMO_RS_STORE_DIR=/tmp/interop ./target/debug/omemo-rs-cli \
+    --jid pyint_b@localhost --password pyintbpass \
+    --insecure-tcp 127.0.0.1:5222 \
+    init --device-id 2002 --opk-count 10
+
+# Start the rust receiver in the background.
+OMEMO_RS_STORE_DIR=/tmp/interop ./target/debug/omemo-rs-cli \
+    --jid pyint_b@localhost --password pyintbpass \
+    --insecure-tcp 127.0.0.1:5222 \
+    recv --timeout 60 > /tmp/rrecv.log 2>&1 &
+
+# Send from Python. The interop client builds the SCE envelope
+# itself (slixmpp-omemo doesn't), then encrypts via
+# `SessionManager.encrypt` directly.
+sleep 5  # let rust login + publish + start waiting
+test-vectors/.venv/bin/python \
+    test-vectors/integration/python-interop/interop_client.py \
+    --jid pyint_a@localhost --password pyintapass \
+    --address 127.0.0.1:5222 \
+    --data-dir /tmp/interop/python --timeout 30 \
+    send --peer pyint_b@localhost --body "hello rust from python"
+
+wait
+cat /tmp/rrecv.log
+# [<ts>] pyint_a@localhost/<resource>: hello rust from python
 ```
 
 ## Why the python venv is reused
