@@ -46,6 +46,7 @@ WORKDIR /var/lib/prosody
 #   muc_c / muc_d   — `tests/muc.rs::refresh_pulls_each_occupants_...` (Stage 5.2)
 #   muc_e / muc_f / muc_g — Stage 5.5 group-OMEMO gate (3-client)
 #   cli_a / cli_b   — `omemo-rs-cli/tests/cli.rs` (5-FU.4 binary spawn)
+#   pyint_a / pyint_b — `tests/python_interop.rs` (Stage 6: omemo-rs ↔ python-omemo cross-impl)
 ENTRYPOINT ["sh", "-c", "\
     prosodyctl register alice localhost alicepass || true; \
     prosodyctl register bob localhost bobpass || true; \
@@ -61,4 +62,6 @@ ENTRYPOINT ["sh", "-c", "\
     prosodyctl register muc_g localhost mucgpass || true; \
     prosodyctl register cli_a localhost cliapass || true; \
     prosodyctl register cli_b localhost clibpass || true; \
+    prosodyctl register pyint_a localhost pyintapass || true; \
+    prosodyctl register pyint_b localhost pyintbpass || true; \
     exec prosody"]
