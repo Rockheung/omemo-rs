@@ -35,7 +35,7 @@ OMEMO 2 만 구현합니다.
 | 6.2 | Conversations / Dino | ⏳ | manual; 같은 Prosody에 `omemo-rs-cli` 사용 |
 | 7.1 | `omemo-oldmemo` 스캐폴드 | ✅ | DR 세션 라운드트립 포함 10개 단위 테스트 |
 | 7.2 | `gen_oldmemo.py` + replay | ✅ | Syndace python-oldmemo 와 byte-equal (KEX + 3 메시지) |
-| 7.3 | `omemo-stanza` axolotl 네임스페이스 | ⏳ | `eu.siacs.conversations.axolotl` 라운드트립 |
+| 7.3 | `omemo-stanza` axolotl 네임스페이스 | ✅ | `eu.siacs.conversations.axolotl` 라운드트립 + AES-128-GCM body |
 | 7.4 | `omemo-pep` dual-backend | ⏳ | devicelist 네임스페이스별 백엔드 선택 |
 | 7.5 | oldmemo cross-impl 게이트 | ⏳ | `python_interop --backend oldmemo` 양방향 |
 

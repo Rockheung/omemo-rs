@@ -403,13 +403,22 @@ extended with a path dep on `omemo-oldmemo`; CI's fixture-drift job
 in `ci.yml` now installs `oldmemo==2.1.0` so the weekly regen job
 picks up `gen_oldmemo.py`.
 
-### 7.3 — `omemo-stanza` axolotl-namespace encoder/parser ⏳
+### 7.3 — `omemo-stanza` axolotl-namespace encoder/parser ✅
 
-Parallel encoder/parser for the OMEMO 0.3 stanza shape:
-`<encrypted xmlns='eu.siacs.conversations.axolotl'><header sid='...'>
-<key prekey='true' rid='...'>...</key><iv>...</iv></header>
-<payload>...</payload></encrypted>`. Selectable by namespace; the
-existing OMEMO 2 encoder is unchanged.
+Parallel encoder/parser for the OMEMO 0.3 stanza shapes
+(`<encrypted>` / `<bundle>` / `<list>`) lives in
+`omemo-stanza::axolotl_stanza`. Selectable by namespace; the
+existing OMEMO 2 encoder in `lib.rs` is unchanged. The bundle
+encoder/parser implements the sign-bit-stuffing convention
+python-oldmemo uses to round-trip the Ed25519 IK through a
+Curve25519-only wire form (bit 7 of byte 63 of the SPK signature
+carries the IK sign bit). Body encryption is AES-128-GCM via the
+new `omemo-stanza::axolotl_aead` module — distinct from the
+XEP-0420 SCE envelope used for OMEMO 2. 9 stanza + 7 AEAD unit
+tests cover round-trips, 3-recipient fan-out, attribute-reorder
+tolerance, sign-bit round-trip, prefix-byte rejection, and tamper
+detection. `cargo deny` stays clean (`aes-gcm` 0.10 is RustCrypto
+MIT/Apache).
 
 ### 7.4 — `omemo-pep` dual-backend support ⏳
 

@@ -24,7 +24,7 @@ Ordering reflects dependencies — do top to bottom.
 | 6.2 — Conversations / Dino | ⏳ | manual; uses `omemo-rs-cli` against the same Prosody |
 | 7.1 — `omemo-oldmemo` scaffold | ✅ | `cargo test -p omemo-oldmemo` (10 unit tests) |
 | 7.2 — `gen_oldmemo.py` + replay | ✅ | byte-equal vs python-oldmemo on KEX + 3 messages |
-| 7.3 — `omemo-stanza` axolotl ns | ⏳ | round-trip `eu.siacs.conversations.axolotl` stanzas |
+| 7.3 — `omemo-stanza` axolotl ns | ✅ | round-trip `eu.siacs.conversations.axolotl` stanzas + AES-128-GCM body |
 | 7.4 — `omemo-pep` dual-backend | ⏳ | per-peer backend selection by devicelist namespace |
 | 7.5 — oldmemo cross-impl gate | ⏳ | `python_interop --backend oldmemo` (both directions) |
 
@@ -578,17 +578,28 @@ oracle (see ADR-009 in `docs/decisions.md`).
       against the same fixture so future schema bumps light up the
       replay diff.
 
-### 7.3 — `omemo-stanza` axolotl-namespace encoder/parser ⏳
+### 7.3 — `omemo-stanza` axolotl-namespace encoder/parser ✅
 
-- [ ] New module `omemo-stanza::oldmemo_stanza` for the OMEMO 0.3
-      shape: `<encrypted xmlns='eu.siacs.conversations.axolotl'>
-      <header sid='...'><key prekey='true' rid='...'>...</key>
-      <iv>...</iv></header><payload>...</payload></encrypted>`.
-- [ ] AES-128-GCM body encryption (vs OMEMO 2's SCE envelope) —
-      `key_blob = aes128_key(16) || gcm_tag(16)` distributed via the
-      ratchet to each recipient device.
-- [ ] Round-trip + 3-recipient unit tests parallel to the existing
-      OMEMO 2 ones.
+- [x] New module `omemo-stanza::axolotl_stanza` covering all three
+      OMEMO 0.3 stanza shapes: `<encrypted>` (with the flat
+      key-list-then-iv `<header>` layout — no per-JID grouping —
+      and an optional `<payload>`), `<bundle>` (with the
+      sign-bit-stuffing trick that encodes the Ed25519 IK sign bit
+      into bit 7 of byte 63 of the SPK signature so the wire form
+      can stay Curve25519-only), and `<list>` (flat device IDs;
+      no labels per the 0.3 spec).
+- [x] New module `omemo-stanza::axolotl_aead` — AES-128-GCM body
+      encryption (vs OMEMO 2's XEP-0420 SCE envelope). Returns
+      `(payload_ciphertext, iv(12), key_blob(32) = aes128_key||gcm_tag)`;
+      the per-device blob is distributed through the ratchet and
+      the IV rides along plaintext in the `<iv>` element.
+- [x] 9 stanza unit tests + 7 AEAD unit tests parallel to the
+      existing OMEMO 2 ones (round-trip with payload, key-only,
+      3-recipient, attribute-reordering tolerance, sign-bit
+      round-trip, prefix-byte rejection, tamper detection).
+- [x] `omemo-stanza` gains workspace deps on `aes-gcm`, `rand_core`,
+      `zeroize`, and a path dep on `omemo-xeddsa` for the
+      Curve25519↔Ed25519 conversion. `cargo deny` stays clean.
 
 ### 7.4 — `omemo-pep` dual-backend support ⏳
 
