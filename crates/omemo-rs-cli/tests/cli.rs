@@ -1,14 +1,14 @@
 //! Integration test for the `omemo-rs-cli` binary itself —
 //! exercises the same `init` / `send` / `recv` invocations the
-//! README quickstart shows, against a local Prosody. Catches CLI-
+//! README quickstart shows, against a local XMPP fixture. Catches CLI-
 //! level regressions (arg parsing, store-path resolution, exit
 //! codes, stdout format) that the lower-level `omemo-pep` tests
 //! don't see.
 //!
-//!     docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+//!     docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d
 //!     cargo test -p omemo-rs-cli -- --ignored
 //!
-//! Uses dedicated `cli_a` / `cli_b` pre-registered Prosody accounts
+//! Uses dedicated `cli_a` / `cli_b` pre-registered accounts
 //! so the test can run in parallel with the other ignored
 //! integration tests in the workspace.
 //!
@@ -54,7 +54,7 @@ fn run_init(store_dir: &std::path::Path, jid: &str, password: &str, device_id: u
 }
 
 #[test]
-#[ignore = "5-FU.4 CLI integration; requires Prosody on 127.0.0.1:5222"]
+#[ignore = "5-FU.4 CLI integration; requires the XMPP fixture on 127.0.0.1:5222"]
 fn alice_send_bob_recv_via_cli_binary() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store_dir = dir.path();

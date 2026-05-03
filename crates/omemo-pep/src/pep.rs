@@ -112,6 +112,21 @@ fn element_to_device_list(elem: &Element) -> Result<DeviceList, PepError> {
     DeviceList::parse(&xml).map_err(|e| PepError::Parse(format!("DeviceList parse: {e}")))
 }
 
+/// Resolve the own bare JID for self-PEP iqs.
+///
+/// Modern XMPP servers (ejabberd 23.x, Prosody 13.x with default
+/// settings) echo `from=<own-bare>` in iq responses to self-PEP
+/// requests. tokio-xmpp's iq tracker keys requests by `to` and
+/// matches against the response's normalised `from` — so for the
+/// match to succeed we must send self-PEP requests with
+/// `to=Some(<own-bare>)`. Sending `None` made early Prosody
+/// happy because that server omitted `from` on self-iqs, but ejabberd
+/// (and modern Prosody) echo it; with `to=None` the response keys
+/// to `Some(own-bare)` and never resolves the token.
+fn self_jid(client: &Client) -> Option<Jid> {
+    client.bound_jid().map(|j| Jid::from(j.to_bare()))
+}
+
 /// Drive the client stream until either the iq response is delivered or
 /// the stream ends. tokio-xmpp delivers iq responses via the
 /// `IqResponseToken`, but the response only arrives if `Client::next` is
@@ -151,7 +166,7 @@ pub async fn publish_device_list(client: &mut Client, list: &DeviceList) -> Resu
         publish_options: Some(publish_options_form(vec![("pubsub#access_model", "open")])),
     };
     let token = client
-        .send_iq(None, IqRequest::Set(Element::from(pubsub)))
+        .send_iq(self_jid(client), IqRequest::Set(Element::from(pubsub)))
         .await;
     match await_iq_response(client, token).await? {
         IqResponse::Result(_) => Ok(()),
@@ -180,7 +195,7 @@ pub async fn fetch_device_list(
         subid: None,
         items: vec![],
     });
-    let to = peer.map(Jid::from);
+    let to = peer.map(Jid::from).or_else(|| self_jid(client));
     let token = client
         .send_iq(to, IqRequest::Get(Element::from(request)))
         .await;
@@ -246,7 +261,7 @@ pub async fn publish_bundle(
         ])),
     };
     let token = client
-        .send_iq(None, IqRequest::Set(Element::from(pubsub)))
+        .send_iq(self_jid(client), IqRequest::Set(Element::from(pubsub)))
         .await;
     match await_iq_response(client, token).await? {
         IqResponse::Result(_) => Ok(()),
@@ -273,7 +288,7 @@ pub async fn fetch_bundle(
             payload: None,
         }],
     });
-    let to = peer.map(Jid::from);
+    let to = peer.map(Jid::from).or_else(|| self_jid(client));
     let token = client
         .send_iq(to, IqRequest::Get(Element::from(request)))
         .await;
@@ -365,7 +380,7 @@ pub async fn publish_old_device_list(
         publish_options: Some(publish_options_form(vec![("pubsub#access_model", "open")])),
     };
     let token = client
-        .send_iq(None, IqRequest::Set(Element::from(pubsub)))
+        .send_iq(self_jid(client), IqRequest::Set(Element::from(pubsub)))
         .await;
     match await_iq_response(client, token).await? {
         IqResponse::Result(_) => Ok(()),
@@ -385,7 +400,7 @@ pub async fn fetch_old_device_list(
         subid: None,
         items: vec![],
     });
-    let to = peer.map(Jid::from);
+    let to = peer.map(Jid::from).or_else(|| self_jid(client));
     let token = client
         .send_iq(to, IqRequest::Get(Element::from(request)))
         .await;
@@ -430,7 +445,7 @@ pub async fn publish_old_bundle(
         ])),
     };
     let token = client
-        .send_iq(None, IqRequest::Set(Element::from(pubsub)))
+        .send_iq(self_jid(client), IqRequest::Set(Element::from(pubsub)))
         .await;
     match await_iq_response(client, token).await? {
         IqResponse::Result(_) => Ok(()),
@@ -451,7 +466,7 @@ pub async fn fetch_old_bundle(
         subid: None,
         items: vec![],
     });
-    let to = peer.map(Jid::from);
+    let to = peer.map(Jid::from).or_else(|| self_jid(client));
     let token = client
         .send_iq(to, IqRequest::Get(Element::from(request)))
         .await;

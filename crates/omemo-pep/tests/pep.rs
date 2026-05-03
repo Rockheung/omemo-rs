@@ -1,9 +1,9 @@
 //! Integration tests: PEP publish + fetch round-trips on
 //! `urn:xmpp:omemo:2:devices` and `urn:xmpp:omemo:2:bundles`.
 //!
-//! Marked `#[ignore]`. Bring up Prosody first:
+//! Marked `#[ignore]`. Bring up the XMPP fixture first:
 //!
-//!     docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+//!     docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d
 //!
 //! Then run:
 //!
@@ -25,18 +25,18 @@ async fn await_online(client: &mut omemo_pep::Client) {
                 return;
             }
         }
-        panic!("client stream ended without Online event (is Prosody running?)");
+        panic!("client stream ended without Online event (is the XMPP fixture running?)");
     })
     .await
     .expect("login timed out");
 }
 
 #[tokio::test]
-#[ignore = "requires Prosody on 127.0.0.1:5222 (see test-vectors/integration/prosody/)"]
+#[ignore = "requires the XMPP fixture on 127.0.0.1:5222 (see test-vectors/integration/xmpp/)"]
 async fn bob_publishes_and_fetches_own_device_list() {
     // Uses bob so this test can run in parallel with `connect.rs` (which
     // uses alice) without two sessions for the same account colliding on
-    // Prosody.
+    // XMPP server.
     let bob_jid = BareJid::from_str("bob@localhost").expect("bob JID");
     let mut client = connect_plaintext(bob_jid, "bobpass", "127.0.0.1:5222");
 
@@ -78,7 +78,7 @@ async fn bob_publishes_and_fetches_own_device_list() {
 }
 
 #[tokio::test]
-#[ignore = "requires Prosody on 127.0.0.1:5222 (see test-vectors/integration/prosody/)"]
+#[ignore = "requires the XMPP fixture on 127.0.0.1:5222 (see test-vectors/integration/xmpp/)"]
 async fn charlie_publishes_and_fetches_own_bundle() {
     // Each test binary uses its own account to avoid the same-JID
     // reconnect timing flake we hit with two bob tests in sequence.

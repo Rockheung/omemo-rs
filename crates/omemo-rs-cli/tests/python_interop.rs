@@ -5,13 +5,13 @@
 //! directions decrypt the same body bytes.
 //!
 //! Marked `#[ignore]` — the workspace `cargo test` doesn't run it
-//! automatically. Bring up Prosody and the Python venv first:
+//! automatically. Bring up the XMPP fixture and the Python venv first:
 //!
-//!     docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+//!     docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d
 //!     test-vectors/.venv/bin/pip install slixmpp slixmpp-omemo lxml
 //!     cargo test -p omemo-rs-cli --test python_interop -- --ignored
 //!
-//! The two scenarios use dedicated `pyint_a` / `pyint_b` Prosody
+//! The two scenarios use dedicated `pyint_a` / `pyint_b`
 //! accounts (registered by the Dockerfile entrypoint) so they can
 //! run in serial without colliding with the other ignored tests.
 
@@ -96,7 +96,7 @@ fn poll_log_for<F: Fn(&str) -> bool>(path: &Path, pred: F, deadline_secs: u64) -
 }
 
 #[test]
-#[ignore = "Stage 6 cross-impl interop; requires Prosody + python-interop venv"]
+#[ignore = "Stage 6 cross-impl interop; requires the XMPP fixture + python-interop venv"]
 fn rust_send_python_recv_via_omemo2() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store_dir = dir.path();
@@ -190,7 +190,7 @@ fn rust_send_python_recv_via_omemo2() {
 }
 
 #[test]
-#[ignore = "Stage 6 cross-impl interop; requires Prosody + python-interop venv"]
+#[ignore = "Stage 6 cross-impl interop; requires the XMPP fixture + python-interop venv"]
 fn python_send_rust_recv_via_omemo2() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store_dir = dir.path();
@@ -271,7 +271,7 @@ fn python_send_rust_recv_via_omemo2() {
 // ---------------------------------------------------------------------------
 //
 // Mirror of the OMEMO 2 pair above, with `--backend oldmemo` on both
-// sides. We reuse the `pyint_a` / `pyint_b` Prosody accounts — each
+// sides. We reuse the `pyint_a` / `pyint_b` accounts — each
 // test uses its own `tempdir` so neither side carries persistent
 // state across runs, and OMEMO 0.3 PEP nodes are a different
 // namespace (`eu.siacs.conversations.axolotl.{devicelist,bundles:N}`)
@@ -279,7 +279,7 @@ fn python_send_rust_recv_via_omemo2() {
 // data either.
 
 #[test]
-#[ignore = "Stage 7.5 cross-impl interop; requires Prosody + python-interop venv"]
+#[ignore = "Stage 7.5 cross-impl interop; requires the XMPP fixture + python-interop venv"]
 fn rust_send_python_recv_via_omemo03() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store_dir = dir.path();
@@ -369,7 +369,7 @@ fn rust_send_python_recv_via_omemo03() {
 }
 
 #[test]
-#[ignore = "Stage 7.5 cross-impl interop; requires Prosody + python-interop venv"]
+#[ignore = "Stage 7.5 cross-impl interop; requires the XMPP fixture + python-interop venv"]
 fn python_send_rust_recv_via_omemo03() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store_dir = dir.path();

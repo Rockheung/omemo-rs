@@ -1,11 +1,11 @@
 //! Stage 4 GATE TEST — two omemo-pep instances exchange three OMEMO 2
-//! messages over a real XMPP server (Prosody on `127.0.0.1:5222`),
+//! messages over a real XMPP server on 127.0.0.1:5222,
 //! with `omemo-session`'s SQLite [`Store`] as the system of record on
 //! both sides (4-FU.1).
 //!
-//! Bring Prosody up first:
+//! Bring the XMPP fixture up first:
 //!
-//!     docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+//!     docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d
 //!
 //! Then:
 //!
@@ -15,7 +15,7 @@
 //! 1. alice and bob each open an in-memory `Store`, install identity +
 //!    SPK + OPKs into it via `install_identity`, and derive their
 //!    stanza-level [`Bundle`] from the store.
-//! 2. Both connect to Prosody (alice@localhost / bob@localhost) and
+//! 2. Both connect to the XMPP fixture (alice@localhost / bob@localhost) and
 //!    publish their device list and bundle to PEP.
 //! 3. Alice fetches bob's published bundle, calls
 //!    `bootstrap_and_save_active`, which runs X3DH active and
@@ -53,7 +53,7 @@ async fn await_online(client: &mut omemo_pep::Client) {
                 return;
             }
         }
-        panic!("client stream ended without Online event (is Prosody running?)");
+        panic!("client stream ended without Online event (is the XMPP fixture running?)");
     })
     .await
     .expect("login timed out");
@@ -68,7 +68,7 @@ async fn announce_presence(client: &mut omemo_pep::Client) {
 }
 
 #[tokio::test]
-#[ignore = "Stage 4 gate; requires Prosody on 127.0.0.1:5222"]
+#[ignore = "Stage 4 gate; requires the XMPP fixture on 127.0.0.1:5222"]
 async fn alice_to_bob_three_messages_over_real_xmpp() {
     // ------ Per-side SQLite stores. In-memory because the gate is a
     // one-shot test; production would use `Store::open(path)`.
@@ -120,7 +120,7 @@ async fn alice_to_bob_three_messages_over_real_xmpp() {
     await_online(&mut alice).await;
     await_online(&mut bob).await;
 
-    // Both clients announce availability so Prosody routes chat
+    // Both clients announce availability so the server routes chat
     // messages to bob's bound resource.
     announce_presence(&mut alice).await;
     announce_presence(&mut bob).await;

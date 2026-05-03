@@ -1,9 +1,9 @@
 name: integration
 
-# Brings up the local Prosody MUC fixture and runs the
+# Brings up the local XMPP fixture MUC fixture and runs the
 # `#[ignore]`'d integration tests in `omemo-pep` (Stage 4 + Stage 5
 # gates plus the `connect` / `pep` smoke checks). Kept separate from
-# `ci.yml` because building the Prosody image and waiting for the
+# `ci.yml` because building the XMPP server image and waiting for the
 # container to come up adds ~60s — too slow to gate every PR on.
 
 on:
@@ -53,12 +53,12 @@ jobs:
 
       - name: Bring up Prosody
         run: |
-          docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d --build
+          docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d --build
           # Tight wait loop with a 90s ceiling. Prosody's healthcheck
           # interval is 5s, so it usually flips healthy in well under
           # half that.
           for _ in $(seq 1 45); do
-            status=$(docker compose -f test-vectors/integration/prosody/docker-compose.yml ps --format json | head -n1)
+            status=$(docker compose -f test-vectors/integration/xmpp/docker-compose.yml ps --format json | head -n1)
             if echo "$status" | grep -q '"Health":"healthy"'; then
               echo "Prosody is healthy."
               exit 0
@@ -67,7 +67,7 @@ jobs:
           done
           echo "Prosody did not become healthy within 90s — last status:"
           echo "$status"
-          docker compose -f test-vectors/integration/prosody/docker-compose.yml logs
+          docker compose -f test-vectors/integration/xmpp/docker-compose.yml logs
           exit 1
 
       - name: cargo test -- --ignored (omemo-pep + omemo-rs-cli)
@@ -107,8 +107,8 @@ jobs:
 
       - name: Prosody logs (always, for debugging)
         if: always()
-        run: docker compose -f test-vectors/integration/prosody/docker-compose.yml logs --tail=200
+        run: docker compose -f test-vectors/integration/xmpp/docker-compose.yml logs --tail=200
 
       - name: Stop Prosody
         if: always()
-        run: docker compose -f test-vectors/integration/prosody/docker-compose.yml down -v
+        run: docker compose -f test-vectors/integration/xmpp/docker-compose.yml down -v

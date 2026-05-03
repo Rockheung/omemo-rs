@@ -46,8 +46,8 @@ correctly; the workarounds are entirely on the Python side.
 ## Running it manually (rust → python)
 
 ```bash
-# Bring up Prosody (registers `pyint_a` / `pyint_b` accounts).
-docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+# Bring up the XMPP fixture (registers `pyint_a` / `pyint_b` accounts).
+docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d
 
 # Initialise the omemo-rs side once.
 cargo build -p omemo-rs-cli
@@ -84,8 +84,8 @@ tail -5 /tmp/py.log
 ## Running it manually (python → rust)
 
 ```bash
-# Bring up Prosody.
-docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+# Bring up the XMPP fixture.
+docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d
 
 # Initialise the rust side (alice in this scenario receives).
 cargo build -p omemo-rs-cli

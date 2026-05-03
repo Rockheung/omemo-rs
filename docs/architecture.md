@@ -44,7 +44,7 @@ Glues Layer A onto a real XMPP stack (`tokio-xmpp`):
   §6). Adds `MucRoom` (occupant table, presence dispatch, MUC join),
   `refresh_device_lists`, multi-recipient `encrypt_to_peers`, and
   `send_groupchat`. Gate: three `omemo-pep` clients on a real
-  Prosody MUC do KEX-wrapped fan-out + follow-up.
+  XMPP MUC do KEX-wrapped fan-out + follow-up.
 
 The cryptographic primitives do not change between Stages 4 and 5;
 what's new is async orchestration and presence/PEP discovery flows.

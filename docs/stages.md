@@ -16,8 +16,8 @@ bytes, peer devices are tracked under a TOFU/Manual trust policy
 with IK-drift detection, production deployments ship StartTLS via
 `connect_starttls` (rustls + aws-lc-rs + native cert validation),
 two `omemo-pep` instances exchange three OMEMO 2 chat messages
-over a real Prosody (`tests/gate.rs`), three `omemo-pep` instances
-exchange OMEMO 2 group-chat messages over a real Prosody MUC
+over a real XMPP (`tests/gate.rs`), three `omemo-pep` instances
+exchange OMEMO 2 group-chat messages over a real XMPP MUC
 (`tests/muc.rs::three_clients_groupchat_omemo2_round_trip`),
 **omemo-rs ↔ Syndace's python-omemo cross-implementation interop
 passes both directions on both backends** (4 tests in
@@ -242,7 +242,7 @@ publish device list + bundle, alice fetches bob's data, bootstraps
 active, sends three `<message>` stanzas (one KEX + two follow-ups),
 bob recovers all three plaintexts byte-equal.
 
-**Test infra**: `test-vectors/integration/prosody/` brings up a
+**Test infra**: `test-vectors/integration/xmpp/` brings up a
 Debian + prosody.im apt-repo Prosody 13 image with three
 pre-registered accounts (alice / bob / charlie). All four
 integration tests (`connect`, two `pep` round-trips, `gate`) run in
@@ -335,7 +335,7 @@ landed it in five sub-stages:
   #2 is the same fan-out with `kex=None`, decrypted via
   `receive_followup`.
 
-Test infra: Prosody MUC component on `conference.localhost` with
+Test infra: XMPP MUC component on `conference.localhost` with
 `muc_room_locking = false`. Per-scenario account allocation
 (`muc_a` / `muc_b` for 5.1, `muc_c` / `muc_d` for 5.2, `muc_e` /
 `muc_f` / `muc_g` for 5.5) plus `serial_test::serial` to keep
@@ -474,7 +474,7 @@ the spec carries body bytes raw, no SCE envelope to bypass).
 * `rust_send_python_recv_via_omemo03`
 * `python_send_rust_recv_via_omemo03`
 
-Both pass on a real Prosody alongside the existing two OMEMO 2
+Both pass on a real XMPP alongside the existing two OMEMO 2
 cases (4 tests green total in 41.7s). One bug surfaced + fixed
 during the gate: the OMEMO 0.3 KEX wire form is
 `0x33 || OMEMOKeyExchange.SerializeToString()` (same `[VERSION_BYTE]`

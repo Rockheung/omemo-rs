@@ -29,23 +29,23 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 1.4 | `omemo-twomemo` | ✅ | 1 KEX + 3 messages, byte-equal protobuf |
 | 2 | `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
 | 3 | `omemo-session` | ✅ | identity + bundle + persist + restart, no re-keying |
-| 4 | `omemo-pep` | ✅ | alice ↔ bob 3 messages over real Prosody (`gate.rs`) |
-| 5 | Group OMEMO (MUC) | ✅ | 3 omemo-pep clients groupchat round-trip on real Prosody MUC (`tests/muc.rs`) |
+| 4 | `omemo-pep` | ✅ | alice ↔ bob 3 messages over real XMPP (`gate.rs`) |
+| 5 | Group OMEMO (MUC) | ✅ | 3 omemo-pep clients groupchat round-trip on real XMPP MUC (`tests/muc.rs`) |
 | 6.1 | python-omemo cross-impl | ✅ | omemo-rs ↔ Syndace python-omemo bidirectional via `tests/python_interop.rs` |
-| 6.2 | Conversations / Dino | ⏳ | manual; drive `omemo-rs-cli` against same Prosody |
+| 6.2 | Conversations / Dino | ⏳ | manual; drive `omemo-rs-cli` against same server |
 | 7.1 | `omemo-oldmemo` scaffold | ✅ | 10 unit tests incl. full DR session round-trip |
 | 7.2 | `gen_oldmemo.py` + replay | ✅ | byte-equal vs Syndace python-oldmemo (KEX + 3 messages) |
 | 7.3 | `omemo-stanza` axolotl ns | ✅ | round-trip `eu.siacs.conversations.axolotl` + AES-128-GCM body |
 | 7.4 | `omemo-pep` dual-backend | ✅ | parallel `*_oldmemo` flow + dual-namespace `wait_for_encrypted_any` |
-| 7.5 | oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real Prosody |
+| 7.5 | oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real XMPP |
 | 8 | Converse.js E2E rig | ✅ | multi-session browser ↔ CLI E2E (`docs/converse-e2e.md`) |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
 fixture. `cargo test --workspace` passes 64 unit/replay tests; an
 additional 10 integration tests gate the XMPP path against a local
-Prosody container (run with `-- --ignored`). Stages 4 + 5 + 6.1 +
+XMPP container (run with `-- --ignored`). Stages 4 + 5 + 6.1 +
 the 4-FU.1..4 / 5-FU.1..4 follow-ups are done: alice ↔ bob 1:1 and
-alice → bob+carol groupchat round-trip on a real Prosody MUC, plus
+alice → bob+carol groupchat round-trip on a real XMPP MUC, plus
 **omemo-rs ↔ Syndace's python-omemo cross-implementation interop in
 both directions** (Stage 6.1 — `cargo test -p omemo-rs-cli --test
 python_interop`). The gate flows entirely through `omemo-session`'s
@@ -106,7 +106,7 @@ To exchange a real OMEMO 2 message against a localhost XMPP server,
 build the CLI:
 
 ```bash
-docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d
 cargo build -p omemo-rs-cli --release
 
 # Initialise alice and bob (one-time per account):

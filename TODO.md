@@ -18,7 +18,7 @@ Ordering reflects dependencies — do top to bottom.
 | 1.4 — `omemo-twomemo` | ✅ | `twomemo` (1 KEX + 3 messages, byte-equal protobuf) |
 | 2 — `omemo-stanza` | ✅ | XEP-0384 §3+§5 round-trip + 3-recipient |
 | 3 — `omemo-session` | ✅ | persist/restart 1:1 round-trip |
-| 4 — `omemo-pep` | ✅ | alice ↔ bob 3-message exchange over real Prosody (`gate.rs`) |
+| 4 — `omemo-pep` | ✅ | alice ↔ bob 3-message exchange over real XMPP (`gate.rs`) |
 | 5 — Group OMEMO | ✅ | `three_clients_groupchat_omemo2_round_trip` (3 omemo-rs in MUC) |
 | 6.1 — python-omemo cross-impl | ✅ | `cargo test -p omemo-rs-cli --test python_interop -- --ignored` (both directions) |
 | 6.2 — Conversations / Dino | ⏳ | manual; uses `omemo-rs-cli` against the same Prosody |
@@ -26,12 +26,12 @@ Ordering reflects dependencies — do top to bottom.
 | 7.2 — `gen_oldmemo.py` + replay | ✅ | byte-equal vs python-oldmemo on KEX + 3 messages |
 | 7.3 — `omemo-stanza` axolotl ns | ✅ | round-trip `eu.siacs.conversations.axolotl` stanzas + AES-128-GCM body |
 | 7.4 — `omemo-pep` dual-backend | ✅ | parallel `*_oldmemo` flows + dual-namespace `wait_for_encrypted_any` |
-| 7.5 — oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real Prosody |
+| 7.5 — oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real XMPP |
 | 8 — Converse.js E2E rig       | ✅ | multi-session browser ↔ CLI E2E (`docs/converse-e2e.md`) |
 
 **Stages 1–5 + 4-FU.1..4 + 5-FU.1..4 + Stage 6.1 + Stage 7.1 complete.**
 Three `omemo-pep` clients exchange OMEMO 2 group-chat messages
-end-to-end across a real Prosody MUC; the 1:1 path stays green from
+end-to-end across a real XMPP MUC; the 1:1 path stays green from
 Stage 4; **omemo-rs ↔ python-omemo (Syndace's reference Python
 stack) cross-implementation interop passes in both directions** as
 part of CI. The production hardening pass added OPK auto-refill,
@@ -164,7 +164,7 @@ test, all green together.
 
 - [x] Pick XMPP library — `tokio-xmpp 5` + `xmpp-parsers 0.22` + `jid 0.12`
       (xmpp-rs family, MPL-2.0 — see ADR-007).
-- [x] Localhost integration infra: `test-vectors/integration/prosody/` —
+- [x] Localhost integration infra: `test-vectors/integration/xmpp/` —
       Dockerfile (Debian + prosody.im apt repo, Prosody 13.x) +
       docker-compose with idempotent `alice`/`bob` registration.
 - [x] First connect+auth integration test (`#[ignore]`'d so default
@@ -260,7 +260,7 @@ test, all green together.
       XEP-0384 v0.9: `pubsub#access_model = open` on both, plus
       `pubsub#max_items = max` on the bundle node. Verified green
       against Prosody 13 (server applies them on auto-create).
-- [x] **Gate**: local Prosody integration test, two `omemo-pep`
+- [x] **Gate**: local XMPP fixture integration test, two `omemo-pep`
       instances exchange 3 messages over real XMPP. ✅
       `omemo-pep::tests::gate::alice_to_bob_three_messages_over_real_xmpp`
 
@@ -371,7 +371,7 @@ and groupchat fan-out.
       `muc#roomconfig_whois = anyone` so the room is non-anonymous —
       required for OMEMO MUC since we need real JIDs to fetch each
       occupant's bundle.
-- [x] Prosody MUC component (`conference.localhost`) registered with
+- [x] XMPP MUC component (`conference.localhost`) registered with
       `muc_room_locking = false` and public-by-default flags.
 - [x] 4 unit tests + integration test
       `two_clients_join_same_room_and_see_each_other`.
@@ -477,7 +477,7 @@ order of landing.
       bundle stays at target capacity.
 - [x] Trust hard-coded to TOFU; production callers will eventually
       expose a flag and persist explicit user decisions.
-- [x] End-to-end verified against the local Prosody fixture:
+- [x] End-to-end verified against the local XMPP fixture fixture:
       muc_a → muc_b round-trip recovers the body bytes.
 
 ## Stage 6 — Real-Client Interop
@@ -678,7 +678,7 @@ oracle (see ADR-009 in `docs/decisions.md`).
 
 Adds a docker-compose service for Converse.js so a human can
 drive multi-session OMEMO 0.3 traffic across browser ↔ browser ↔
-`omemo-rs-cli` over real Prosody. Prerequisite for upstream-track
+`omemo-rs-cli` over real XMPP. Prerequisite for upstream-track
 client work (Stage 9+: OMEMO 2 in Converse.js, Rust+WASM port).
 
 - [x] Prosody `mod_bosh` + `mod_websocket` + `mod_mam` +
@@ -695,7 +695,7 @@ client work (Stage 9+: OMEMO 2 in Converse.js, Rust+WASM port).
       for some users; 8765 picked deliberately to avoid common
       conflicts).
 - [x] Four dedicated `e2e_alice` / `e2e_bob` / `e2e_carol` /
-      `e2e_dave` accounts in the Prosody Dockerfile entrypoint,
+      `e2e_dave` accounts in the XMPP server Dockerfile entrypoint,
       separate from the automated-test JIDs.
 - [x] `docs/converse-e2e.md` — operator manual covering
       multi-browser-profile workflow, 1:1, MUC, trust model,

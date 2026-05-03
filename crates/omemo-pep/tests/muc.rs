@@ -6,19 +6,19 @@
 //!   per-occupant device-list cache.
 //! * `three_clients_groupchat_omemo2_round_trip` — Stage 5.5 gate.
 //!   alice / bob / carol exchange OMEMO 2 chat messages over a real
-//!   Prosody MUC, with full encrypt/fan-out/decrypt round-trips.
+//!   XMPP MUC, with full encrypt/fan-out/decrypt round-trips.
 //!
 //! ```sh
-//! docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+//! docker compose -f test-vectors/integration/xmpp/docker-compose.yml up -d
 //! cargo test -p omemo-pep --test muc -- --ignored
 //! ```
 //!
-//! Each scenario claims its own group of pre-registered Prosody
+//! Each scenario claims its own group of pre-registered
 //! accounts (`muc_a` / `muc_b` for 5.1, `muc_c` / `muc_d` for 5.2,
 //! `muc_e` / `muc_f` / `muc_g` for 5.5) and `serial_test::serial`
 //! pins the binary's tests to run one at a time so cargo's per-
 //! binary parallelism doesn't race four-plus clients on a cold
-//! Prosody.
+//! the server.
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -36,7 +36,7 @@ use tokio_xmpp::Stanza;
 use xmpp_parsers::presence::Presence;
 
 async fn await_online(client: &mut omemo_pep::Client) {
-    // 60s — Stage 5 puts up to ~7 clients on one Prosody (4 in
+    // 60s — Stage 5 puts up to ~7 clients on one server (4 in
     // `tests/muc.rs` plus 3 in the Stage 5.5 gate, all serialised by
     // `serial_test::serial`), and the OTHER test binaries
     // (`tests/gate.rs`, `tests/pep.rs`, `tests/connect.rs`) run in
@@ -48,7 +48,7 @@ async fn await_online(client: &mut omemo_pep::Client) {
                 return;
             }
         }
-        panic!("client stream ended without Online event (is Prosody running?)");
+        panic!("client stream ended without Online event (is the XMPP fixture running?)");
     })
     .await
     .expect("login timed out");
@@ -60,7 +60,7 @@ async fn await_online(client: &mut omemo_pep::Client) {
 /// matching event so callers can assert on its body.
 /// Drain *both* streams concurrently into their respective rooms
 /// until `done(alice_room, bob_room)` returns `true`. Polling both at
-/// once is necessary because Prosody can broadcast bob's join to alice
+/// once is necessary because the server can broadcast bob's join to alice
 /// at any point — if alice is idle inside a single-client pump, the
 /// broadcast lands in tokio-xmpp's internal channel but our task is
 /// not yielding to drain it.
@@ -104,7 +104,7 @@ async fn pump_two<F: Fn(&MucRoom, &MucRoom) -> bool>(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-#[ignore = "Stage 5.1; requires Prosody on 127.0.0.1:5222 with conference.localhost MUC"]
+#[ignore = "Stage 5.1; requires the XMPP fixture on 127.0.0.1:5222 with conference.localhost MUC"]
 async fn two_clients_join_same_room_and_see_each_other() {
     let alice_jid = BareJid::from_str("muc_a@localhost").unwrap();
     let bob_jid = BareJid::from_str("muc_b@localhost").unwrap();
@@ -226,7 +226,7 @@ async fn two_clients_join_same_room_and_see_each_other() {
 /// `Store::upsert_device`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-#[ignore = "Stage 5.2; requires Prosody on 127.0.0.1:5222 with conference.localhost MUC"]
+#[ignore = "Stage 5.2; requires the XMPP fixture on 127.0.0.1:5222 with conference.localhost MUC"]
 async fn refresh_pulls_each_occupants_device_list_into_store() {
     const ALICE_DEVICE_ID: u32 = 27_001;
     const BOB_DEVICE_ID: u32 = 27_002;
@@ -436,7 +436,7 @@ async fn pump_three<F: Fn(&MucRoom, &MucRoom, &MucRoom) -> bool>(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 #[serial_test::serial]
-#[ignore = "Stage 5.5 gate; requires Prosody on 127.0.0.1:5222 with conference.localhost MUC"]
+#[ignore = "Stage 5.5 gate; requires the XMPP fixture on 127.0.0.1:5222 with conference.localhost MUC"]
 async fn three_clients_groupchat_omemo2_round_trip() {
     // ------------------------------------------------------------
     // Identity material — deterministic seeds for replay; production
