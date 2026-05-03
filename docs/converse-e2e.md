@@ -27,9 +27,10 @@ This setup is "production-level" in the sense that:
   `crates/omemo-rs-cli/tests/python_interop.rs`. Adding OMEMO 2 to
   Converse.js is on our roadmap (Stage 9 / upstream PR — see
   `docs/stages.md`).
-* Loopback-only. The `docker-compose.yml` binds every host port to
-  `127.0.0.1` so nothing in this rig is reachable from the
-  network.
+* The compose file binds every host port to `0.0.0.0` so a phone /
+  tablet / second laptop on the same LAN can attach. Convenient
+  for cross-device manual testing; **do NOT expose this stack to
+  the public internet** — SASL PLAIN flows in cleartext.
 * The fixture uses plain HTTP for BOSH (`consider_bosh_secure =
   true` is set so SASL PLAIN is allowed without TLS). For real
   deployments use `connect_starttls` on the XMPP side and front
@@ -43,7 +44,8 @@ This setup is "production-level" in the sense that:
 docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
 ```
 
-This brings up two containers, both bound to `127.0.0.1`:
+This brings up two containers, with all ports bound to `0.0.0.0`
+(reachable from the local network):
 
 | Service                    | Port | Use                                            |
 |----------------------------|------|------------------------------------------------|
@@ -51,6 +53,11 @@ This brings up two containers, both bound to `127.0.0.1`:
 | `omemo-rs-prosody`         | 5280 | HTTP BOSH + WebSocket — for Converse.js        |
 | `omemo-rs-prosody`         | 5281 | HTTPS BOSH + WebSocket — production-realistic  |
 | `omemo-rs-converse`        | 8765 | Static Converse.js page                        |
+
+The Converse.js page derives its BOSH/WebSocket URL from
+`window.location.hostname` at runtime, so opening
+`http://<server-ip>:8765/` from another device on the LAN just
+works — both the page and the XMPP attach come from the same host.
 
 Wait for both to report `healthy`:
 

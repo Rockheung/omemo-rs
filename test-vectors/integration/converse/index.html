@@ -60,13 +60,23 @@
 
     <script src="https://cdn.jsdelivr.net/npm/converse.js@11.0.0/dist/converse.min.js"></script>
     <script>
-      // Connect over BOSH (XEP-0124/0206). Plain HTTP — Prosody is
-      // configured with `consider_bosh_secure = true` so SASL PLAIN
-      // is allowed even though the underlying transport is HTTP. OK
-      // because the host port is bound to 127.0.0.1 only.
+      // Derive the BOSH / WebSocket host from `window.location` so
+      // the same page works whether the user opened it as
+      // http://localhost:8765/ on the server, or as
+      // http://<lan-ip>:8765/ from another device on the same LAN.
+      // Prosody's BOSH is on the same hostname as nginx, port 5280.
+      //
+      // Plain HTTP — Prosody is configured with
+      // `consider_bosh_secure = true` so SASL PLAIN is allowed even
+      // though the underlying transport is unencrypted. The compose
+      // file binds these ports on 0.0.0.0 by default; this is a
+      // dev / LAN fixture, not a public deployment. For production
+      // use, front Prosody's port 5281 with a real cert and switch
+      // these URLs to https/wss.
+      var host = window.location.hostname || "localhost";
       converse.initialize({
-        bosh_service_url: "http://localhost:5280/http-bind/",
-        websocket_url: "ws://localhost:5280/xmpp-websocket",
+        bosh_service_url: "http://" + host + ":5280/http-bind/",
+        websocket_url: "ws://" + host + ":5280/xmpp-websocket",
         // Auto-discovery would also work via XEP-0156 host-meta,
         // but pinning the URL keeps the dev fixture deterministic.
         authentication: "login",
