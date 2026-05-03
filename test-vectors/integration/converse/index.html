@@ -50,43 +50,49 @@
   <body>
     <header>
       <strong>omemo-rs E2E — Converse.js</strong>
-      &nbsp;|&nbsp; Local: <code>http://localhost:8765/</code> &middot;
-      LAN/HTTPS: <code>https://&lt;host&gt;:8766/</code> (accept the
-      self-signed cert + accept a second time at
-      <code>https://&lt;host&gt;:5281/</code> for BOSH).
-      Log in as e.g. <code>e2e_alice@localhost</code> /
-      <code>e2ealicepass</code>. Open in another browser profile to
-      drive a second session. See
+      &nbsp;|&nbsp; Local:
+      <code>http://localhost:8765/</code> &middot; LAN/HTTPS:
+      <code>https://&lt;host&gt;:8766/</code> (accept the self-signed
+      cert once). BOSH/WebSocket attach to the same origin via
+      <code>/http-bind/</code> + <code>/xmpp-websocket</code> (nginx
+      reverse-proxies to Prosody internally), so no second cert
+      acceptance is needed. Log in as e.g.
+      <code>e2e_alice@localhost</code> / <code>e2ealicepass</code>.
+      Open in another browser profile to drive a second session. See
       <code>docs/converse-e2e.md</code> for the full workflow.
     </header>
 
     <script src="https://cdn.jsdelivr.net/npm/converse.js@11.0.0/dist/converse.min.js"></script>
     <script>
-      // Pick BOSH / WebSocket scheme + port based on how this page
-      // was loaded:
+      // BOSH and WebSocket both ride **same-origin reverse proxy**
+      // through nginx — `/http-bind/` and `/xmpp-websocket` on
+      // whatever port the page itself was loaded from. Two payoffs:
       //
-      //   page http://...:8765/   →  http://...:5280/http-bind/   + ws://
-      //   page https://...:8766/  →  https://...:5281/http-bind/  + wss://
+      //   * No CORS — same-origin XHR/WS just works.
+      //   * No SNI mismatch — nginx terminates TLS for any host
+      //     the cert covers, so `https://<lan-ip>:8766/` doesn't
+      //     hit Prosody's "unrecognized_name" SNI gate.
       //
-      // The HTTPS path is required when the page is opened from a
-      // non-localhost origin (LAN IP, mDNS hostname): browsers only
-      // expose `crypto.subtle` to **secure contexts**, and OMEMO +
-      // SCRAM-SHA-1 both fail without it. Self-signed cert; accept
-      // the warning at the page URL AND once at
-      // https://<host>:5281/ (browsers treat each origin
-      // separately).
-      var host = window.location.hostname || "localhost";
-      var bosh_url, ws_url;
-      if (window.location.protocol === "https:") {
-        bosh_url = "https://" + host + ":5281/http-bind/";
-        ws_url   = "wss://"   + host + ":5281/xmpp-websocket";
-      } else {
-        bosh_url = "http://" + host + ":5280/http-bind/";
-        ws_url   = "ws://"   + host + ":5280/xmpp-websocket";
-      }
+      // For LAN access the secure context (HTTPS) is mandatory:
+      // browsers withhold `crypto.subtle` outside loopback HTTP /
+      // any HTTPS, and OMEMO + SCRAM-SHA-1 both need it. Open the
+      // page at https://<host>:8766/ and accept the self-signed
+      // cert once.
+      var origin = window.location.origin;  // e.g. "https://gpus.lcl:8766"
+      var ws_scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+      var bosh_url = origin + "/http-bind/";
+      var ws_url   = ws_scheme + "//" + window.location.host + "/xmpp-websocket";
       converse.initialize({
         bosh_service_url: bosh_url,
         websocket_url: ws_url,
+        // Skip XEP-0156 host-meta discovery: Converse.js otherwise
+        // tries `https://<jid-domain>/.well-known/host-meta` first
+        // (i.e. https://localhost/ for `e2e_alice@localhost`),
+        // which is always 404 / connection-refused on this fixture
+        // and clutters the JS console with `Failed to fetch` noise.
+        // The hard-coded BOSH/WS URLs above are the source of
+        // truth.
+        discover_connection_methods: false,
         // Auto-discovery would also work via XEP-0156 host-meta,
         // but pinning the URL keeps the dev fixture deterministic.
         authentication: "login",

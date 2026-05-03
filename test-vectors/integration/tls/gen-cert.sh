@@ -35,7 +35,30 @@ if command -v hostname >/dev/null 2>&1; then
             *) SAN_IPS+=("$ip") ;;
         esac
     done
+    # Also include every hostname / alias the box answers to.
+    # Operators often access the rig at https://<machine-name>:8766/
+    # rather than via a numeric IP. `hostname -A` returns the full
+    # alias list (FQDN + short + mDNS-style names like `host.lcl`);
+    # `hostname` alone gives the short form when the FQDN is set
+    # via /etc/hosts rather than DNS.
+    for h in $(hostname 2>/dev/null) \
+             $(hostname -f 2>/dev/null) \
+             $(hostname -s 2>/dev/null) \
+             $(hostname -A 2>/dev/null); do
+        # Drop empties + duplicates of `localhost`.
+        [ -n "$h" ] && [ "$h" != "localhost" ] && SAN_HOSTS+=("$h")
+    done
 fi
+# De-dup SAN_HOSTS preserving order.
+declare -A seen=()
+unique_hosts=()
+for h in "${SAN_HOSTS[@]}"; do
+    if [ -z "${seen[$h]:-}" ]; then
+        unique_hosts+=("$h")
+        seen[$h]=1
+    fi
+done
+SAN_HOSTS=("${unique_hosts[@]}")
 
 # Build the SAN extension line.
 san=""

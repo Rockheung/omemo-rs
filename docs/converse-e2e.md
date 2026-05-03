@@ -76,17 +76,19 @@ This brings up two containers, with all ports bound to `0.0.0.0`
 
 The HTTPS path uses a self-signed cert. On first visit your
 browser will warn ("Not Secure" / "Your connection is not
-private"); accept it once for **both** origins:
+private"); accept it once at `https://<host>:8766/` and you're
+done — nginx serves the page **and** reverse-proxies the BOSH /
+WebSocket attach (`/http-bind/` and `/xmpp-websocket`) on the
+same origin. There's no second cert to accept and no CORS
+round-trip in the way.
 
-1. `https://<host>:8766/` — the Converse.js page itself.
-2. `https://<host>:5281/` — the BOSH endpoint Converse.js
-   attaches to. Open the URL in a separate tab, hit "Advanced →
-   Proceed" once, close the tab. Browsers treat each origin (host
-   + port) separately for cert overrides.
+If your hostname or LAN IP changes, regenerate the cert so the
+new SAN entries get baked in:
 
-The Converse.js page picks `https/wss` + port 5281 automatically
-when the page itself was loaded over HTTPS, and `http/ws` + 5280
-when over HTTP.
+```bash
+bash test-vectors/integration/tls/gen-cert.sh
+docker compose -f test-vectors/integration/prosody/docker-compose.yml restart
+```
 
 Wait for both to report `healthy`:
 
@@ -299,12 +301,14 @@ all peers will see a "new device" and re-trust on first sight
   context, so SCRAM-SHA-1 and OMEMO both die. Fix: switch to
   `https://<host>:8766/`, accept the cert at both 8766 and 5281.
 
-* **HTTPS page loads but BOSH fails with "blocked: mixed content"
-  or net::ERR_CERT_AUTHORITY_INVALID for 5281.** The browser
-  hasn't accepted the self-signed cert at the BOSH origin yet.
-  Open `https://<host>:5281/` in a new tab; you'll get the cert
-  warning page; click Advanced → Proceed; then return to the
-  Converse.js tab.
+* **`tlsv1 unrecognized_name` / `wss://...:5281/...` failed.**
+  This was the symptom on a pre-2026-05-03 setup where Converse.js
+  attached directly to Prosody's HTTPS BOSH port and Prosody
+  rejected SNI for any hostname other than the configured
+  VirtualHost (`localhost`). The current rig nginx-proxies BOSH at
+  `/http-bind/` on the page's origin; if you still see
+  `wss://...:5281/`, you're loading a stale cached `index.html` —
+  hard-refresh (Ctrl-Shift-R / Cmd-Shift-R).
 * **Converse.js says "OMEMO not available for this contact".**
   The peer hasn't published a bundle yet, or the bundle is on the
   wrong namespace. Confirm the peer ran `init` (or for browsers,

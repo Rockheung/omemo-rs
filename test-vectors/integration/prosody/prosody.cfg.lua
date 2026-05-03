@@ -85,16 +85,19 @@ log = {
     { levels = {min = "info"}, to = "console" },
 }
 
--- TLS cert + key for HTTPS BOSH (port 5281) and StartTLS on the
--- C2S socket. The same cert is also mounted into the nginx
--- sibling so the browser sees a single self-signed identity for
--- both `https://<host>:8766/` (Converse.js page) and the BOSH
--- HTTPS XHR target. Regenerate via
--- `test-vectors/integration/tls/gen-cert.sh`.
+-- TLS cert + key. nginx terminates TLS for all browser-facing
+-- traffic (Converse.js page on 8766, plus the same-origin
+-- /http-bind/ and /xmpp-websocket reverse-proxies), so this only
+-- backs Prosody's own HTTPS BOSH on 5281 (legacy / direct-attach
+-- clients) plus StartTLS on the C2S socket. nginx → Prosody hops
+-- stay on plain HTTP across the compose private network.
 ssl = {
     certificate = "/etc/prosody/tls/cert.pem";
     key = "/etc/prosody/tls/key.pem";
 }
+-- Trust the X-Forwarded-* headers nginx sets so logs / rate
+-- limiting see the real client IP, not the gateway's.
+trusted_proxies = { "127.0.0.1", "::1", "172.16.0.0/12" }
 
 VirtualHost "localhost"
     enabled = true
