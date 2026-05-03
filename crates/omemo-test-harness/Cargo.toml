@@ -21,4 +21,5 @@ omemo-xeddsa = { path = "../omemo-xeddsa" }
 omemo-doubleratchet = { path = "../omemo-doubleratchet" }
 omemo-x3dh = { path = "../omemo-x3dh" }
 omemo-twomemo = { path = "../omemo-twomemo" }
+omemo-oldmemo = { path = "../omemo-oldmemo" }
 curve25519-dalek = { workspace = true }

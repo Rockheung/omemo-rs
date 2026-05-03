@@ -1371,6 +1371,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "omemo-doubleratchet",
+ "omemo-oldmemo",
  "omemo-twomemo",
  "omemo-x3dh",
  "omemo-xeddsa",
