@@ -1,0 +1,282 @@
+# Production-level E2E test setup — Converse.js + omemo-rs
+
+A multi-session, browser-driven end-to-end rig for verifying that
+`omemo-rs` interoperates with a real-world OMEMO 0.3 client
+(Converse.js 11.x) over a real XMPP server (Prosody 13.x). Pairs
+naturally with the omemo-rs ↔ python-omemo cross-impl Rust tests
+(Stages 6.1 + 7.5), which validate the wire format end-to-end but
+without a UI in the loop.
+
+This setup is "production-level" in the sense that:
+
+* Real Prosody, real BOSH HTTP-binding, real OMEMO 0.3 stanzas on
+  the wire — same Converse.js code path that talks to public
+  Conversations / Movim / etc. servers.
+* SQLite-backed `omemo-rs` identity persistence.
+* Multiple long-lived sessions in parallel (browser tabs in
+  separate profiles + a CLI process), the way actual users run
+  XMPP.
+* No mocks, no shortcut paths.
+
+**Caveats (read these before reporting issues):**
+
+* Converse.js 11.x speaks **OMEMO 0.3 only**
+  (`eu.siacs.conversations.axolotl`). It does not yet speak OMEMO
+  2 (`urn:xmpp:omemo:2`). For OMEMO 2 cross-impl coverage, drive
+  `omemo-rs-cli --backend twomemo` against `python-omemo` via
+  `crates/omemo-rs-cli/tests/python_interop.rs`. Adding OMEMO 2 to
+  Converse.js is on our roadmap (Stage 9 / upstream PR — see
+  `docs/stages.md`).
+* Loopback-only. The `docker-compose.yml` binds every host port to
+  `127.0.0.1` so nothing in this rig is reachable from the
+  network.
+* The fixture uses plain HTTP for BOSH (`consider_bosh_secure =
+  true` is set so SASL PLAIN is allowed without TLS). For real
+  deployments use `connect_starttls` on the XMPP side and front
+  Prosody's port 5281 with a properly-signed cert for HTTPS BOSH.
+
+---
+
+## Quickstart — bring up the stack
+
+```bash
+docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+```
+
+This brings up two containers, both bound to `127.0.0.1`:
+
+| Service                    | Port | Use                                            |
+|----------------------------|------|------------------------------------------------|
+| `omemo-rs-prosody`         | 5222 | XMPP C2S TCP — for `omemo-rs-cli`              |
+| `omemo-rs-prosody`         | 5280 | HTTP BOSH + WebSocket — for Converse.js        |
+| `omemo-rs-prosody`         | 5281 | HTTPS BOSH + WebSocket — production-realistic  |
+| `omemo-rs-converse`        | 8765 | Static Converse.js page                        |
+
+Wait for both to report `healthy`:
+
+```bash
+docker compose -f test-vectors/integration/prosody/docker-compose.yml ps
+```
+
+---
+
+## Pre-registered E2E accounts
+
+The Prosody Dockerfile entrypoint creates four dedicated accounts
+for this workflow so you don't collide with the automated-test
+accounts (`alice` / `bob` / `pyint_*` / etc.):
+
+| Account              | Password         |
+|----------------------|------------------|
+| `e2e_alice@localhost`| `e2ealicepass`   |
+| `e2e_bob@localhost`  | `e2ebobpass`     |
+| `e2e_carol@localhost`| `e2ecarolpass`   |
+| `e2e_dave@localhost` | `e2edavepass`    |
+
+---
+
+## Multi-session workflow
+
+### 1. Open Converse.js as user A
+
+In a regular browser window, navigate to:
+
+```
+http://127.0.0.1:8765/
+```
+
+In the Converse.js login form:
+
+* **JID**: `e2e_alice@localhost`
+* **Password**: `e2ealicepass`
+
+Click *Log in*. The status indicator in the top-left should turn
+green within a few seconds.
+
+### 2. Open Converse.js as user B
+
+You need a second browser session that **does not share storage**
+with the first one (Converse.js stores OMEMO keys in the
+browser's IndexedDB; reusing the same profile would clobber the
+first user's identity).
+
+Pick whichever of these works on your platform:
+
+* **Chrome / Chromium**: `Settings → You and Google → Add` to
+  create a fresh profile, then open the new profile and navigate
+  to `http://127.0.0.1:8765/`.
+* **Firefox**: launch a separate profile via
+  `firefox -P` (Profile Manager) or
+  `firefox --new-instance --no-remote -P bob`.
+* **Different browsers entirely**: e.g. Chrome for alice, Firefox
+  for bob.
+* **Private / Incognito window**: works for one session at a time,
+  but storage is cleared when the window closes — the OMEMO
+  identity is regenerated on next login, so peer trust prompts
+  fire again. Useful for "first-contact" testing.
+
+In the second session, log in as `e2e_bob@localhost` /
+`e2ebobpass`.
+
+### 3. Add the third party — `omemo-rs-cli`
+
+Open a terminal:
+
+```bash
+# Initialise carol's identity in a fresh store directory.
+export OMEMO_RS_STORE_DIR="$(mktemp -d)"
+cargo run --release -p omemo-rs-cli -- \
+    --jid e2e_carol@localhost \
+    --password e2ecarolpass \
+    --insecure-tcp 127.0.0.1:5222 \
+    init --device-id 30001 --opk-count 50
+
+# In one shell, leave carol waiting for inbound messages.
+cargo run --release -p omemo-rs-cli -- \
+    --jid e2e_carol@localhost \
+    --password e2ecarolpass \
+    --insecure-tcp 127.0.0.1:5222 \
+    recv --timeout 600 &
+```
+
+`carol` will publish her bundle on **both** the OMEMO 2 and
+OMEMO 0.3 namespaces (see `omemo-rs-cli`'s `publish_identity`),
+so the Converse.js sessions can find her over the OMEMO 0.3
+namespace they speak.
+
+### 4. Exercise 1:1 OMEMO between alice (browser) and bob (browser)
+
+In alice's Converse.js session:
+
+1. Click *Add a Contact*.
+2. Enter `e2e_bob@localhost` and add.
+3. Wait for bob to accept the subscription request that pops up
+   in the other session.
+4. Once both sides see each other online, click bob's name to
+   open the chat.
+5. The shield/lock icon next to the message input shows OMEMO is
+   on by default (we set `omemo_default: true` in
+   `index.html`). Type and send a message.
+
+Bob's Converse.js session should display the message with a
+locked-padlock indicator and no warnings.
+
+### 5. Exercise 1:1 OMEMO between alice (browser) and carol (CLI)
+
+Same flow as step 4 but with `e2e_carol@localhost` as the
+contact. Carol's `recv` process should print:
+
+```
+e2e_alice@localhost/<device-id>: <body>
+```
+
+…then exit. Restart the `recv` process in the same store dir to
+receive the next message:
+
+```bash
+cargo run --release -p omemo-rs-cli -- \
+    --jid e2e_carol@localhost --password e2ecarolpass \
+    --insecure-tcp 127.0.0.1:5222 recv --timeout 600
+```
+
+### 6. Carol → alice (CLI sending into a browser)
+
+```bash
+cargo run --release -p omemo-rs-cli -- \
+    --jid e2e_carol@localhost --password e2ecarolpass \
+    --insecure-tcp 127.0.0.1:5222 \
+    send --backend oldmemo --peer e2e_alice@localhost \
+         --body "hello alice — from carol via omemo-rs"
+```
+
+`--backend oldmemo` is the critical flag here: Converse.js 11.x
+only decrypts the `eu.siacs.conversations.axolotl` namespace, so
+carol must speak OMEMO 0.3 outbound. The default is `twomemo`
+(OMEMO 2), which Converse.js would silently ignore.
+
+### 7. Multi-user MUC — alice + bob (browser) + carol (CLI)
+
+In alice's Converse.js:
+
+1. Click the rooms icon (or use *Discover MUCs* /
+   `conference.localhost`).
+2. Create / join `omemo-e2e@conference.localhost`.
+3. Have bob's session join the same room.
+4. Send a message — both browser sessions should display it
+   end-to-end encrypted.
+
+Carol's `omemo-rs-cli` does not yet have a `--muc` send path
+(planned: see `docs/stages.md` Stage 5 productionisation
+follow-up); for now MUC drives only browser ↔ browser.
+
+---
+
+## Trust model in the rig
+
+* **Converse.js** uses Blind Trust Before Verification (BTBV) —
+  every new device is auto-trusted on first sight. Same as our
+  `omemo-rs` `TrustPolicy::Tofu`.
+* **`omemo-rs-cli`** hard-codes `TrustPolicy::Tofu`. So the first
+  time alice sends to carol's CLI, carol records alice's IK and
+  sends back. Subsequent sessions verify against the recorded IK.
+
+The trust state on the CLI side persists in the SQLite store
+(`$OMEMO_RS_STORE_DIR/<jid>.db`); on the browser side it's in the
+profile's IndexedDB.
+
+---
+
+## Resetting the rig
+
+```bash
+# Wipe Prosody state (devices, bundles, MAM, accounts get re-registered):
+docker compose -f test-vectors/integration/prosody/docker-compose.yml down -v
+docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+
+# Wipe a CLI account's local store:
+rm "$OMEMO_RS_STORE_DIR/e2e_carol@localhost.db"
+
+# Wipe a browser session's IndexedDB:
+#   In the DevTools → Application → Storage → Clear site data
+```
+
+After a wipe the next login regenerates a fresh OMEMO identity;
+all peers will see a "new device" and re-trust on first sight
+(BTBV / TOFU).
+
+---
+
+## Troubleshooting
+
+* **Converse.js login spinner never turns green.**
+  Open the browser DevTools network tab and look for `/http-bind/`
+  POST requests. If they're 404, BOSH isn't reachable — confirm
+  `docker compose ps` shows `prosody` healthy and that port 5280
+  is bound. If the requests are blocked by CORS, the
+  `http_cors_override` block in `prosody.cfg.lua` likely got
+  disabled — check `docker compose logs prosody`.
+* **Converse.js says "OMEMO not available for this contact".**
+  The peer hasn't published a bundle yet, or the bundle is on the
+  wrong namespace. Confirm the peer ran `init` (or for browsers,
+  toggled the OMEMO indicator on at least once). On the
+  `omemo-rs-cli` side, `init` publishes on **both** namespaces.
+* **`omemo-rs-cli` exits with `presence-subscription-required`.**
+  This means the peer's PEP node is not configured `access_model
+  = open`. If you're seeing this on a fresh stack, double-check
+  the Prosody config has `pep` (not `pep_simple`) loaded — see
+  the comment in `prosody.cfg.lua`.
+* **Stale session after a wipe.**
+  When you delete one side's store but not the other, the
+  surviving side still tries to use the old session and fails
+  with `AuthFailed` or similar. Wipe both sides, or start a fresh
+  `omemo-e2e` MUC room.
+
+---
+
+## Where this fits in the project plan
+
+This setup unblocks Stage 6.2 ("Conversations / Dino manual
+interop") for the Converse.js variant and is a prerequisite for
+Stage 9 ("OMEMO 2 in Converse.js") — once we land OMEMO 2 in a
+fork of Converse.js, this same rig drives the cross-impl checks.
+See `docs/stages.md` for the broader roadmap.

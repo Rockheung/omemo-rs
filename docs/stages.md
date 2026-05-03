@@ -485,3 +485,29 @@ in-process replay fixture were updated to match.
 After Stage 7 passes, the library can talk to any OMEMO 0.3 client
 and is considered v0.1.0 candidate (Stages 8+ — Converse.js fork,
 OMEMO 2 upstream PR, WASM port — are downstream client work).
+
+## Stage 8 — Production-level E2E rig (Converse.js + omemo-rs-cli) ✅
+
+Adds a docker-compose service for Converse.js (nginx static page +
+JSDelivr CDN bundle) alongside the existing Prosody service so a
+human can drive multi-session OMEMO 0.3 traffic — browser ↔
+browser ↔ CLI — over a real XMPP server. Prosody now exposes
+`mod_bosh` + `mod_websocket` + `mod_mam` + `mod_http_file_share`
+on ports 5280 (HTTP) and 5281 (HTTPS), with CORS allow-list +
+`consider_bosh_secure = true` so SASL PLAIN works over the
+loopback HTTP without a self-signed-cert dance. Four new
+pre-registered accounts (`e2e_alice` / `e2e_bob` / `e2e_carol` /
+`e2e_dave`) keep manual sessions isolated from the automated-test
+accounts.
+
+`docs/converse-e2e.md` is the operator manual: stack bring-up,
+multi-browser-profile workflow, 1:1 + MUC paths, trust-model
+notes, troubleshooting. The pre-existing `cargo test` /
+`cargo test -- --ignored` suites stay green against the upgraded
+Prosody (verified post-change against `tests/gate.rs` and the
+4-test cross-impl `python_interop` suite).
+
+Known caveat: Converse.js 11.x is OMEMO-0.3-only — `omemo-rs-cli`
+running against it must use `--backend oldmemo` for outbound. OMEMO
+2 in Converse.js is the next upstream-track stage (and the reason
+omemo-rs needed dual-backend support in the first place).

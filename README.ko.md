@@ -38,6 +38,7 @@ OMEMO 2 만 구현합니다.
 | 7.3 | `omemo-stanza` axolotl 네임스페이스 | ✅ | `eu.siacs.conversations.axolotl` 라운드트립 + AES-128-GCM body |
 | 7.4 | `omemo-pep` dual-backend | ✅ | 평행 `*_oldmemo` 플로우 + 듀얼 네임스페이스 `wait_for_encrypted_any` |
 | 7.5 | oldmemo cross-impl 게이트 | ✅ | `python_interop --backend oldmemo` 양방향 (실제 Prosody) |
+| 8 | Converse.js E2E rig | ✅ | 멀티 세션 브라우저 ↔ CLI E2E (`docs/converse-e2e.md`) |
 
 암호 계층은 모든 픽스처에서 Syndace Python 스택과 byte-equal 로 검증됩니다.
 `cargo test --workspace` 는 64개의 unit/replay 테스트를 통과하며,

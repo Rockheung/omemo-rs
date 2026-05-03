@@ -27,6 +27,7 @@ Ordering reflects dependencies — do top to bottom.
 | 7.3 — `omemo-stanza` axolotl ns | ✅ | round-trip `eu.siacs.conversations.axolotl` stanzas + AES-128-GCM body |
 | 7.4 — `omemo-pep` dual-backend | ✅ | parallel `*_oldmemo` flows + dual-namespace `wait_for_encrypted_any` |
 | 7.5 — oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real Prosody |
+| 8 — Converse.js E2E rig       | ✅ | multi-session browser ↔ CLI E2E (`docs/converse-e2e.md`) |
 
 **Stages 1–5 + 4-FU.1..4 + 5-FU.1..4 + Stage 6.1 + Stage 7.1 complete.**
 Three `omemo-pep` clients exchange OMEMO 2 group-chat messages
@@ -670,6 +671,47 @@ oracle (see ADR-009 in `docs/decisions.md`).
       from the Stage 7.2 commit; the new tests will be picked up
       automatically by the existing `cargo test --test python_interop
       -- --ignored --test-threads=1` invocation.
+
+---
+
+## Stage 8 — Production-level E2E rig (Converse.js + omemo-rs-cli) ✅
+
+Adds a docker-compose service for Converse.js so a human can
+drive multi-session OMEMO 0.3 traffic across browser ↔ browser ↔
+`omemo-rs-cli` over real Prosody. Prerequisite for upstream-track
+client work (Stage 9+: OMEMO 2 in Converse.js, Rust+WASM port).
+
+- [x] Prosody `mod_bosh` + `mod_websocket` + `mod_mam` +
+      `mod_http_file_share` enabled in `prosody.cfg.lua`. Ports
+      5280 (HTTP) + 5281 (HTTPS) exposed on the host loopback.
+- [x] `consider_bosh_secure = true` + CORS allow-list for the
+      Converse.js origin so SASL PLAIN works over plain HTTP on
+      the loopback (no self-signed-cert dance).
+- [x] `test-vectors/integration/converse/index.html` —
+      single-page Converse.js loader pulling 11.0.0 from JSDelivr
+      with `omemo_default: true` + `view_mode: fullscreen`.
+- [x] `nginx:1-alpine` service in compose, mapped to
+      127.0.0.1:8765 (8080 was contested locally by `llama-swap`
+      for some users; 8765 picked deliberately to avoid common
+      conflicts).
+- [x] Four dedicated `e2e_alice` / `e2e_bob` / `e2e_carol` /
+      `e2e_dave` accounts in the Prosody Dockerfile entrypoint,
+      separate from the automated-test JIDs.
+- [x] `docs/converse-e2e.md` — operator manual covering
+      multi-browser-profile workflow, 1:1, MUC, trust model,
+      troubleshooting, where this fits in the roadmap.
+- [x] Verified against the upgraded Prosody: `tests/gate.rs` and
+      the 4-test `python_interop` cross-impl suite stay green.
+
+Out of scope for Stage 8 (deferred):
+
+- [ ] Playwright / browser-automation suite around the rig — the
+      manual workflow is enough for one-off interop sessions.
+      Automate when we land OMEMO 2 in Converse.js (Stage 9) and
+      need regression coverage as a function of upstream changes.
+- [ ] `omemo-rs-cli` MUC send path — currently only browsers can
+      drive group chats end-to-end. CLI MUC join + send lands
+      with the bot orchestrator integration in `nan-curunir`.
 
 ---
 
