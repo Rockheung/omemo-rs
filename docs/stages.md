@@ -4,22 +4,26 @@ This is the master plan, with definition-of-done criteria ("gates") for each
 stage. A stage is not done until its gate test is green. The TODO.md at the
 repo root is the live, checkbox-style derivative of this document.
 
-**Status (2026-05-02)**: Stages 0–5 complete; Stage 4 follow-ups
-4-FU.1 through 4-FU.4 done. Crypto layer is byte-equal with the
-Syndace Python stack, XEP-0384 v0.9 stanzas round-trip canonically,
-SQLite-backed identity/SPK/OPK/session persistence is the system of
-record on both sides of the gate, message bodies are wrapped in
-XEP-0420 SCE envelopes with `<to>`-verification on inbound, peer
-devices are tracked under a TOFU/Manual trust policy with IK-drift
-detection, production deployments ship StartTLS via
-`connect_starttls` (rustls + aws-lc-rs + native cert validation),
-two `omemo-pep` instances exchange three OMEMO 2 chat messages over
-a real Prosody (`tests/gate.rs`), and three `omemo-pep` instances
-exchange OMEMO 2 group-chat messages over a real Prosody MUC
-(`tests/muc.rs::three_clients_groupchat_omemo2_round_trip`). Stage 6
-(Conversations + Dino interop) is the remaining track — it needs
-external clients and so cannot be self-contained in this repo's
-test suite.
+**Status (2026-05-02)**: Stages 0–5 + Stage 6.1 + 5-FU.1..4 + Stage
+7.1 done. Crypto layer is byte-equal with the Syndace Python stack,
+XEP-0384 v0.9 stanzas round-trip canonically, SQLite-backed
+identity/SPK/OPK/session persistence is the system of record on both
+sides of the gate, message bodies are wrapped in XEP-0420 SCE
+envelopes with `<to>`-verification on inbound, peer devices are
+tracked under a TOFU/Manual trust policy with IK-drift detection,
+production deployments ship StartTLS via `connect_starttls` (rustls +
+aws-lc-rs + native cert validation), two `omemo-pep` instances
+exchange three OMEMO 2 chat messages over a real Prosody
+(`tests/gate.rs`), three `omemo-pep` instances exchange OMEMO 2
+group-chat messages over a real Prosody MUC
+(`tests/muc.rs::three_clients_groupchat_omemo2_round_trip`),
+omemo-rs ↔ Syndace's python-omemo cross-implementation interop in
+both directions over OMEMO 2 (Stage 6.1 — `tests/python_interop.rs`),
+and the `omemo-oldmemo` crate is scaffolded clean-room from XEP-0384
+v0.3 + ADR-009 with 10 unit tests green. Stage 6.2 (Conversations +
+Dino manual interop) and Stage 7.2..7.5 (oldmemo fixture pipeline,
+stanza encoder, pep dual-backend, cross-impl gate) are the remaining
+in-repo tracks.
 
 ## Stage 0 — Workspace + Test-Vector Pipeline ✅
 
@@ -342,10 +346,78 @@ Conversations leg properly belongs to the external-client stage.
 **Scope**: Cross-implementation interop with at least Conversations and
 Dino, both DM and MUC.
 
+### 6.1 — python-omemo cross-impl (automated) ✅
+
+omemo-rs ↔ Syndace's python-omemo, both directions, on a real
+Prosody. Automated in CI (`integration.yml`) via
+`crates/omemo-rs-cli/tests/python_interop.rs`.
+
+### 6.2 — Conversations / Dino (manual) ⏳
+
 **Gate**:
 1. Conversations 2.x sends DM → omemo-rs client decrypts.
 2. omemo-rs client sends DM → Conversations decrypts.
 3. Same with Dino.
 4. MUC variant of each.
 
-After Stage 6 passes, the library is considered v0.1.0 candidate.
+## Stage 7 — OMEMO 0.3 (`oldmemo`, `eu.siacs.conversations.axolotl`)
+
+**Scope**: Add OMEMO 0.3 alongside the existing OMEMO 2 backend so
+omemo-rs can talk to the Conversations / Converse.js / Dino installed
+base, which still negotiates 0.3 as the lowest common denominator.
+See ADR-009 for the licence path (clean-room from XEP-0384 v0.3 + the
+existing MIT primitives — python-oldmemo is AGPL and is used only as
+an external fixture oracle).
+
+### 7.1 — `omemo-oldmemo` crate scaffold ✅
+
+* Clean-room `test-vectors/oldmemo/oldmemo.proto` (field numbers from
+  the public XEP / wire shape, not python-oldmemo's `.proto`).
+* `OldmemoSession` mirroring `TwomemoSession`'s API (create_active /
+  create_passive / encrypt_message / decrypt_message / snapshot /
+  from_snapshot) with the OMEMO-0.3 deltas:
+  * Bare-concat `OMEMOAuthenticatedMessage` (`0x33 || msg || mac8`),
+    not a protobuf wrapper.
+  * 8-byte truncated HMAC-SHA-256 (vs twomemo's 16).
+  * AEAD info `b"WhisperMessageKeys"` (vs `b"OMEMO Message Key
+    Material"`).
+  * Root-chain info `b"WhisperRatchet"`, X3DH info `b"WhisperText"`.
+  * Wire pubkey format `0x05 || curve25519_pub` (33 bytes); identity
+    keys are Curve25519, not Ed25519.
+  * AssociatedData = `enc(ik_a)(33) || enc(ik_b)(33)` = 66 bytes.
+
+**Gate**: `cargo test -p omemo-oldmemo` passes 10 unit tests
+(serde round-trips, AEAD encrypt/decrypt, full DR session via
+`session_round_trip_via_doubleratchet`).
+
+### 7.2 — `gen_oldmemo.py` + replay tests ⏳
+
+Mirror `gen_twomemo.py`: deterministic seeds → external python-
+oldmemo Backend → fixture JSON → Rust replay byte-equal. Verifies our
+clean-room implementation matches the Syndace oracle on the wire.
+
+### 7.3 — `omemo-stanza` axolotl-namespace encoder/parser ⏳
+
+Parallel encoder/parser for the OMEMO 0.3 stanza shape:
+`<encrypted xmlns='eu.siacs.conversations.axolotl'><header sid='...'>
+<key prekey='true' rid='...'>...</key><iv>...</iv></header>
+<payload>...</payload></encrypted>`. Selectable by namespace; the
+existing OMEMO 2 encoder is unchanged.
+
+### 7.4 — `omemo-pep` dual-backend support ⏳
+
+`omemo-pep` selects backend per peer based on the advertised devicelist
+namespace. Bundle PEP node names diverge:
+`eu.siacs.conversations.axolotl.devicelist` /
+`.bundles:<deviceid>` for oldmemo, vs `urn:xmpp:omemo:2:devices` /
+`:bundles` for twomemo. `encrypt_to_peers` gains backend dispatch.
+
+### 7.5 — GATE: omemo-rs ↔ python-oldmemo cross-impl ⏳
+
+Extend `python_interop.rs` with `--backend oldmemo`; verify both
+directions decrypt the same body bytes through the
+`eu.siacs.conversations.axolotl` namespace.
+
+After Stage 7 passes, the library can talk to any OMEMO 0.3 client and
+is considered v0.1.0 candidate (Stages 8+ — Converse.js fork, OMEMO 2
+upstream PR, WASM port — are downstream client work).

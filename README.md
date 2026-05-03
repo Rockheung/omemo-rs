@@ -33,6 +33,11 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 5 | Group OMEMO (MUC) | ✅ | 3 omemo-pep clients groupchat round-trip on real Prosody MUC (`tests/muc.rs`) |
 | 6.1 | python-omemo cross-impl | ✅ | omemo-rs ↔ Syndace python-omemo bidirectional via `tests/python_interop.rs` |
 | 6.2 | Conversations / Dino | ⏳ | manual; drive `omemo-rs-cli` against same Prosody |
+| 7.1 | `omemo-oldmemo` scaffold | ✅ | 10 unit tests incl. full DR session round-trip |
+| 7.2 | `gen_oldmemo.py` + replay | ⏳ | byte-equal vs Syndace python-oldmemo (KEX + 3 messages) |
+| 7.3 | `omemo-stanza` axolotl ns | ⏳ | round-trip `eu.siacs.conversations.axolotl` |
+| 7.4 | `omemo-pep` dual-backend | ⏳ | per-peer backend selection by devicelist namespace |
+| 7.5 | oldmemo cross-impl gate | ⏳ | `python_interop --backend oldmemo` (both directions) |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
 fixture. `cargo test --workspace` passes 64 unit/replay tests; an
@@ -173,8 +178,16 @@ are not in the runtime crate graph. We deliberately do **not** depend on
 
 ## Out of scope
 
-* OMEMO 0.3.0 (`oldmemo`/siacs axolotl namespace) — AGPL chain.
 * Hardware-token / smartcard-backed identity keys.
 * Wasm builds (storage layer assumes filesystem + SQLite).
 * Megolm-style group encryption optimisations (OMEMO 2 fanout is fine for
   bot-sized rooms, which are our target).
+
+OMEMO 0.3.0 (`oldmemo`/siacs axolotl namespace) was previously listed
+here on the basis of a libsignal AGPL chain. ADR-009 (2026-05-02)
+re-examined that premise — `python-oldmemo` does not depend on
+libsignal at runtime; its AGPL is Syndace's own licensing choice.
+OMEMO 0.3 is back in scope as Stage 7, implemented clean-room from
+XEP-0384 v0.3 + the existing MIT primitives, with python-oldmemo
+used **only** as an external fixture oracle (never linked, never
+copied). See `docs/decisions.md` ADR-009.

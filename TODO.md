@@ -7,7 +7,7 @@ Ordering reflects dependencies — do top to bottom.
 
 ---
 
-## Status snapshot (2026-05-01)
+## Status snapshot (2026-05-02)
 
 | Stage | Status | Gate test |
 |---|---|---|
@@ -22,8 +22,13 @@ Ordering reflects dependencies — do top to bottom.
 | 5 — Group OMEMO | ✅ | `three_clients_groupchat_omemo2_round_trip` (3 omemo-rs in MUC) |
 | 6.1 — python-omemo cross-impl | ✅ | `cargo test -p omemo-rs-cli --test python_interop -- --ignored` (both directions) |
 | 6.2 — Conversations / Dino | ⏳ | manual; uses `omemo-rs-cli` against the same Prosody |
+| 7.1 — `omemo-oldmemo` scaffold | ✅ | `cargo test -p omemo-oldmemo` (10 unit tests) |
+| 7.2 — `gen_oldmemo.py` + replay | ⏳ | byte-equal vs python-oldmemo on KEX + 3 messages |
+| 7.3 — `omemo-stanza` axolotl ns | ⏳ | round-trip `eu.siacs.conversations.axolotl` stanzas |
+| 7.4 — `omemo-pep` dual-backend | ⏳ | per-peer backend selection by devicelist namespace |
+| 7.5 — oldmemo cross-impl gate | ⏳ | `python_interop --backend oldmemo` (both directions) |
 
-**Stages 1–5 + 4-FU.1..4 + 5-FU.1..4 + Stage 6.1 complete.**
+**Stages 1–5 + 4-FU.1..4 + 5-FU.1..4 + Stage 6.1 + Stage 7.1 complete.**
 Three `omemo-pep` clients exchange OMEMO 2 group-chat messages
 end-to-end across a real Prosody MUC; the 1:1 path stays green from
 Stage 4; **omemo-rs ↔ python-omemo (Syndace's reference Python
@@ -517,6 +522,94 @@ quirk rather than a spec violation on our side.
 - [ ] Upgrade `nan-curunir` to use `omemo-rs` (separate repo, separate
       task list — out of scope for this project's TODO)
 - [ ] Tag v0.1.0
+
+---
+
+## Stage 7 — OMEMO 0.3 (`oldmemo`, `eu.siacs.conversations.axolotl`)
+
+Adds the older OMEMO 0.3 wire format alongside OMEMO 2 so omemo-rs
+can talk to the Conversations / Converse.js / Dino installed base
+that still negotiates 0.3 as the lowest common denominator. Licence
+path: clean-room from XEP-0384 v0.3 + the existing MIT primitives —
+python-oldmemo is AGPL and is used **only** as an external fixture
+oracle (see ADR-009 in `docs/decisions.md`).
+
+### 7.0 — ADR-009 ✅
+
+- [x] `docs/decisions.md` — ADR-009 "Re-introduce OMEMO 0.3 via
+      clean-room implementation" supersedes the OMEMO-0.3 portion
+      of ADR-002 (the libsignal portion of ADR-002 stays in force).
+
+### 7.1 — `omemo-oldmemo` crate scaffold ✅
+
+- [x] `crates/omemo-oldmemo/` workspace member (added to root
+      `Cargo.toml`).
+- [x] `test-vectors/oldmemo/oldmemo.proto` clean-room — field numbers
+      from the public XEP / interop wire shape; comments authored.
+- [x] `OldmemoSession` mirroring `TwomemoSession`: create_active /
+      create_passive / encrypt_message / decrypt_message / snapshot
+      / from_snapshot.
+- [x] OMEMO-0.3 deltas captured: bare-concat
+      `OMEMOAuthenticatedMessage` (`0x33 || msg || mac8`), 8-byte
+      truncated HMAC-SHA-256, info strings (`WhisperRatchet`,
+      `WhisperMessageKeys`, `WhisperText`), 33-byte 0x05-prefixed
+      pubkey wire format, 66-byte AssociatedData.
+- [x] `OmemoKeyExchange` builder/parser — `message` is bytes (not a
+      submessage); `ik` / `ek` round-trip with the 0x05 prefix.
+- [x] **Gate**: `cargo test -p omemo-oldmemo` passes 10 unit tests
+      including `session_round_trip_via_doubleratchet` and
+      `aead_rejects_bad_mac`. `cargo deny check` stays green
+      (no AGPL in the runtime graph).
+
+### 7.2 — `gen_oldmemo.py` + replay tests ⏳
+
+- [ ] Clone python-oldmemo into `test-vectors/reference/` and pin in
+      `pip install` recipe (already added to README).
+- [ ] `test-vectors/scripts/gen_oldmemo.py` — deterministic seeds →
+      python-oldmemo `Backend.encrypt_initial_message` /
+      `decrypt_initial_message` outputs, serialised as
+      `fixtures/oldmemo.json`.
+- [ ] `crates/omemo-oldmemo/tests/replay.rs` — load fixture, run our
+      impl on the same inputs, byte-equal `assert_eq!`.
+
+### 7.3 — `omemo-stanza` axolotl-namespace encoder/parser ⏳
+
+- [ ] New module `omemo-stanza::oldmemo_stanza` for the OMEMO 0.3
+      shape: `<encrypted xmlns='eu.siacs.conversations.axolotl'>
+      <header sid='...'><key prekey='true' rid='...'>...</key>
+      <iv>...</iv></header><payload>...</payload></encrypted>`.
+- [ ] AES-128-GCM body encryption (vs OMEMO 2's SCE envelope) —
+      `key_blob = aes128_key(16) || gcm_tag(16)` distributed via the
+      ratchet to each recipient device.
+- [ ] Round-trip + 3-recipient unit tests parallel to the existing
+      OMEMO 2 ones.
+
+### 7.4 — `omemo-pep` dual-backend support ⏳
+
+- [ ] Per-peer backend selection by which devicelist node the peer
+      publishes (`urn:xmpp:omemo:2:devices` vs
+      `eu.siacs.conversations.axolotl.devicelist`).
+- [ ] Bundle PEP-node naming: split fetch_bundle into per-backend
+      paths (`urn:xmpp:omemo:2:bundles` vs
+      `eu.siacs.conversations.axolotl.bundles:<deviceid>`).
+- [ ] `encrypt_to_peers` dispatches to twomemo or oldmemo per peer
+      device; mixed-backend MUC fan-out works (some recipients on
+      OMEMO 2, others on 0.3).
+- [ ] Self-publish on **both** namespaces by default so peers can
+      pick whichever they support.
+
+### 7.5 — GATE: omemo-rs ↔ python-oldmemo cross-impl interop ⏳
+
+- [ ] `interop_client.py` gains `--backend oldmemo` toggle.
+- [ ] `python_interop.rs` gains a parallel pair of test cases
+      (`rust_send_python_recv_via_omemo03` and
+      `python_send_rust_recv_via_omemo03`), serialised by
+      `serial_test::serial`.
+- [ ] CI `integration.yml` runs the new cases alongside the OMEMO 2
+      ones, with `pip install oldmemo==2.1.0` already present.
+- [ ] Dedicated `pyold_a` / `pyold_b` Prosody accounts in the
+      Dockerfile entrypoint (avoid colliding with `pyint_*` /
+      `cli_*`).
 
 ---
 

@@ -33,6 +33,11 @@ OMEMO 2 만 구현합니다.
 | 5 | 그룹 OMEMO (MUC) | ✅ | 3 omemo-pep 클라이언트 그룹 채팅 라운드트립 (`tests/muc.rs`) |
 | 6.1 | python-omemo cross-impl | ✅ | omemo-rs ↔ Syndace python-omemo 양방향 (`tests/python_interop.rs`) |
 | 6.2 | Conversations / Dino | ⏳ | manual; 같은 Prosody에 `omemo-rs-cli` 사용 |
+| 7.1 | `omemo-oldmemo` 스캐폴드 | ✅ | DR 세션 라운드트립 포함 10개 단위 테스트 |
+| 7.2 | `gen_oldmemo.py` + replay | ⏳ | Syndace python-oldmemo 와 byte-equal (KEX + 3 메시지) |
+| 7.3 | `omemo-stanza` axolotl 네임스페이스 | ⏳ | `eu.siacs.conversations.axolotl` 라운드트립 |
+| 7.4 | `omemo-pep` dual-backend | ⏳ | devicelist 네임스페이스별 백엔드 선택 |
+| 7.5 | oldmemo cross-impl 게이트 | ⏳ | `python_interop --backend oldmemo` 양방향 |
 
 암호 계층은 모든 픽스처에서 Syndace Python 스택과 byte-equal 로 검증됩니다.
 `cargo test --workspace` 는 64개의 unit/replay 테스트를 통과하며,
@@ -141,8 +146,16 @@ Python 레퍼런스 패키지들은 **픽스처 생성 시점에만** 쓰이고 
 
 ## 범위 외 (Out of scope)
 
-* OMEMO 0.3.0 (`oldmemo` / siacs axolotl 네임스페이스) — AGPL 체인.
 * 하드웨어 토큰 / 스마트카드 기반 identity key.
 * Wasm 빌드 (저장 계층이 파일시스템 + SQLite 를 가정).
 * Megolm 스타일 그룹 암호화 최적화 (OMEMO 2 의 디바이스별 팬아웃은
   본 프로젝트의 타깃인 봇 규모 룸에서는 충분).
+
+OMEMO 0.3.0 (`oldmemo` / siacs axolotl 네임스페이스) 은 원래
+"libsignal AGPL 체인" 을 이유로 여기 있었습니다. ADR-009 (2026-05-02)
+에서 그 전제를 다시 검토했습니다 — `python-oldmemo` 는 런타임에
+libsignal 에 의존하지 않으며, 그 AGPL 은 Syndace 자체의 라이선스
+선택입니다. OMEMO 0.3 은 Stage 7 으로 다시 범위 안에 들어왔습니다 —
+XEP-0384 v0.3 + 기존 MIT 프리미티브 위에 clean-room 으로 구현하고,
+python-oldmemo 는 **외부 픽스처 오라클로만** 사용합니다 (링크하지도,
+복사하지도 않음). 자세히는 `docs/decisions.md` ADR-009 참조.
