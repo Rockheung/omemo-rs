@@ -7,6 +7,128 @@ them and add the successor below.
 
 ---
 
+## ADR-009 — Re-introduce OMEMO 0.3 (`oldmemo`) via clean-room implementation
+
+**Date**: 2026-05-02
+**Status**: accepted (supersedes the OMEMO 0.3 portion of ADR-002)
+**Stage**: 7
+
+### Why revisit
+
+ADR-002 dropped OMEMO 0.3 on the premise that `python-oldmemo`
+"inherits from the libsignal-protocol-c codebase". Verification on
+2026-05-02 against `test-vectors/reference/python-oldmemo/`
+(commit cloned that day) shows two facts:
+
+1. `python-oldmemo` does **not** import or depend on `libsignal`,
+   `libsignal-protocol-c`, or any GPL/AGPL crypto runtime. It
+   implements OMEMO 0.3 directly on top of `cryptography.hazmat`
+   (BSD/Apache) and the Syndace `python-doubleratchet` /
+   `python-x3dh` / `python-xeddsa` packages (all MIT). The
+   `libsignal-protocol-java` URLs in the source are spec-pointer
+   comments, not import statements.
+2. `python-oldmemo`'s **own** `pyproject.toml` declares
+   `license = "AGPL-3.0-only"`. Syndace chose AGPL for that one
+   package even though the rest of the stack is MIT. That choice is
+   binding on anyone who copies, modifies, or links its source — but
+   the OMEMO 0.3 *protocol* is published as XEP-0384 v0.3 by the XSF
+   and is not itself under AGPL.
+
+So ADR-002's first conclusion ("OMEMO 0.3 → libsignal → AGPL") was
+mechanically wrong; the second conclusion ("python-oldmemo is AGPL,
+so we can't port it") remains correct.
+
+The product context also shifted: the planned client roster includes
+a Converse.js fork (Stage 8+), and most Converse.js / Conversations /
+Dino deployments still negotiate OMEMO 0.3 as the lowest common
+denominator. Refusing to speak `eu.siacs.conversations.axolotl`
+forecloses interop with that ecosystem.
+
+### Decision
+
+Implement OMEMO 0.3 in a new workspace member `omemo-oldmemo` —
+**clean-room from the XEP-0384 v0.3 specification + observed wire
+bytes**, *not* by porting python-oldmemo's source.
+
+Concretely:
+
+* `crates/omemo-oldmemo/proto/oldmemo.proto` is authored from the
+  XEP and from interop fixture wire dumps. Field numbers, types,
+  and required/optional flags are functional facts forced by wire
+  compatibility (uncopyrightable under Oracle v Google / Lotus v
+  Borland reasoning); comments and formatting are our own.
+* The Rust implementation reuses `omemo-doubleratchet`,
+  `omemo-x3dh`, `omemo-xeddsa` (already MIT, already byte-equal
+  verified). The OMEMO-0.3-specific bits — different KDF info
+  strings, AES-128-GCM AEAD, the `OMEMOAuthenticatedMessage`-less
+  envelope shape, the bare-plaintext body (no SCE wrapper) — are
+  written from the XEP.
+* `python-oldmemo` is used **only** as a build-time external
+  oracle: cloned into `test-vectors/reference/python-oldmemo/`
+  (gitignored), invoked by `scripts/gen_oldmemo.py` to produce
+  fixtures, never imported into the Rust crate graph, never
+  included in the published artifact. This is the same arrangement
+  we already have for python-twomemo / python-omemo / etc.
+* Contributors regenerating fixtures see python-oldmemo's AGPL via
+  `pip install oldmemo` in the local venv. AGPL §13 (network use)
+  doesn't trigger because they're running it as a local CLI, not
+  exposing it over a network. AGPL §5 (modified versions) doesn't
+  trigger because we don't modify it.
+* No python-oldmemo source — `.py`, `.proto`, or otherwise — is
+  copied into our repository. Anyone can verify by `find . -name
+  "*.py" | xargs grep -l "Copyright" | xargs grep -L "MIT"`.
+
+### Why "clean-room from the XEP" is legally sound here
+
+* OMEMO 0.3 is a **public protocol specification** (XEP-0384 v0.3,
+  XSF). The spec itself has no licence restriction on
+  implementations — it explicitly invites them.
+* Wire-format field numbers are **interface specifications** that
+  must match for interoperability. Under Oracle v Google (US Sup.
+  Ct. 2021) and earlier Lotus v Borland (1st Cir. 1995), purely
+  functional API/wire elements are not protected by copyright; even
+  if they were, replicating them for interop is canonical fair use.
+* Our crypto primitives (`omemo-doubleratchet`, `omemo-x3dh`,
+  `omemo-xeddsa`) were ported under ADR-004's test-by-replay
+  methodology from Syndace's MIT packages, not from python-oldmemo.
+  Re-using them in `omemo-oldmemo` introduces no new licence
+  exposure.
+* Any direct copy of python-oldmemo source into our repo would
+  violate this ADR. CI must enforce: `cargo deny check` already
+  refuses AGPL in the runtime graph; we additionally add a one-line
+  grep gate to the lint job (see Stage 7 plan).
+
+### Alternatives considered
+
+* **Stay OMEMO-2-only** (ADR-002 status quo). Rejected: forecloses
+  interop with the existing Converse.js / Conversations / Dino
+  installed base, which is the explicit downstream goal.
+* **Vendor `python-oldmemo` and accept AGPL for that crate**.
+  Rejected: AGPL §13 would force source disclosure for any network
+  service using `omemo-rs`, which contradicts ADR-001's commercial
+  carve-out for `nan-curunir`'s successor.
+* **Wait for upstream to dual-license**. Rejected: Syndace has not
+  signalled this and we can't depend on it.
+
+### Consequences
+
+* `omemo-rs` becomes a dual-backend implementation. `omemo-pep`
+  gains a backend selector at session-creation time; `omemo-stanza`
+  gains a parallel parser/encoder for the
+  `eu.siacs.conversations.axolotl` namespace.
+* The fixture generation pipeline gains `gen_oldmemo.py`. Cross-
+  impl interop testing gains a python-oldmemo arm alongside the
+  existing python-omemo arm.
+* The README's "Out of scope: OMEMO 0.3.0 — AGPL chain" line is
+  removed; ADR-002 is annotated as superseded by this ADR for the
+  OMEMO-0.3 portion (the libsignal portion stays in force).
+* If we ever need to copy a non-trivial code passage from python-
+  oldmemo to debug a wire-level discrepancy, we must instead
+  isolate the discrepancy as a fixture and reproduce the Rust
+  divergence from the XEP — never paste AGPL source.
+
+---
+
 ## ADR-008 — StartTLS via `aws-lc-rs` + `rustls-native-certs` (and the ISC / hickory advisory carve-outs)
 
 **Date**: 2026-05-01
@@ -323,7 +445,8 @@ XEdDSA paper. Documented inline in the function body.
 ## ADR-002 — License chain: drop libsignal and OMEMO 0.3
 
 **Date**: 2026-04-29
-**Status**: accepted
+**Status**: accepted (libsignal portion); **superseded by ADR-009**
+for the OMEMO-0.3 portion (2026-05-02)
 **Stage**: pre-0
 
 ### Context
