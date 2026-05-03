@@ -34,7 +34,7 @@ OMEMO 2 만 구현합니다.
 | 6.1 | python-omemo cross-impl | ✅ | omemo-rs ↔ Syndace python-omemo 양방향 (`tests/python_interop.rs`) |
 | 6.2 | Conversations / Dino | ⏳ | manual; 같은 Prosody에 `omemo-rs-cli` 사용 |
 | 7.1 | `omemo-oldmemo` 스캐폴드 | ✅ | DR 세션 라운드트립 포함 10개 단위 테스트 |
-| 7.2 | `gen_oldmemo.py` + replay | ⏳ | Syndace python-oldmemo 와 byte-equal (KEX + 3 메시지) |
+| 7.2 | `gen_oldmemo.py` + replay | ✅ | Syndace python-oldmemo 와 byte-equal (KEX + 3 메시지) |
 | 7.3 | `omemo-stanza` axolotl 네임스페이스 | ⏳ | `eu.siacs.conversations.axolotl` 라운드트립 |
 | 7.4 | `omemo-pep` dual-backend | ⏳ | devicelist 네임스페이스별 백엔드 선택 |
 | 7.5 | oldmemo cross-impl 게이트 | ⏳ | `python_interop --backend oldmemo` 양방향 |
@@ -105,12 +105,13 @@ git clone --depth 1 https://github.com/Syndace/python-doubleratchet.git referenc
 git clone --depth 1 https://github.com/Syndace/python-x3dh.git           reference/python-x3dh
 git clone --depth 1 https://github.com/Syndace/python-xeddsa.git         reference/python-xeddsa
 git clone --depth 1 https://github.com/Syndace/python-twomemo.git        reference/python-twomemo
+git clone --depth 1 https://github.com/Syndace/python-oldmemo.git        reference/python-oldmemo
 git clone --depth 1 https://github.com/Syndace/python-omemo.git          reference/python-omemo
 
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install doubleratchet==1.3.0 x3dh==1.3.0 xeddsa==1.2.0 twomemo==2.1.0 'omemo>=2,<3' \
+pip install doubleratchet==1.3.0 x3dh==1.3.0 xeddsa==1.2.0 twomemo==2.1.0 oldmemo==2.1.0 'omemo>=2,<3' \
             cryptography pydantic
 
 for s in scripts/gen_*.py; do python "$s"; done

@@ -390,11 +390,18 @@ an external fixture oracle).
 (serde round-trips, AEAD encrypt/decrypt, full DR session via
 `session_round_trip_via_doubleratchet`).
 
-### 7.2 — `gen_oldmemo.py` + replay tests ⏳
+### 7.2 — `gen_oldmemo.py` + replay tests ✅
 
-Mirror `gen_twomemo.py`: deterministic seeds → external python-
-oldmemo Backend → fixture JSON → Rust replay byte-equal. Verifies our
-clean-room implementation matches the Syndace oracle on the wire.
+Mirrors `gen_twomemo.py`: deterministic seeds → external python-
+oldmemo `DoubleRatchetImpl.encrypt_initial_message` →
+`fixtures/oldmemo.json`. Rust replay tests in
+`crates/omemo-test-harness/tests/oldmemo.rs` (`gate_oldmemo_kex_plus_three`
++ `session_snapshot_round_trip`) load the JSON, run our impl on the
+same inputs, and `assert_eq!` byte-equal on the KEX bytes plus all
+three follow-up `OMEMOAuthenticatedMessage` blobs. The harness was
+extended with a path dep on `omemo-oldmemo`; CI's fixture-drift job
+in `ci.yml` now installs `oldmemo==2.1.0` so the weekly regen job
+picks up `gen_oldmemo.py`.
 
 ### 7.3 — `omemo-stanza` axolotl-namespace encoder/parser ⏳
 

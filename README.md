@@ -34,7 +34,7 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 6.1 | python-omemo cross-impl | ✅ | omemo-rs ↔ Syndace python-omemo bidirectional via `tests/python_interop.rs` |
 | 6.2 | Conversations / Dino | ⏳ | manual; drive `omemo-rs-cli` against same Prosody |
 | 7.1 | `omemo-oldmemo` scaffold | ✅ | 10 unit tests incl. full DR session round-trip |
-| 7.2 | `gen_oldmemo.py` + replay | ⏳ | byte-equal vs Syndace python-oldmemo (KEX + 3 messages) |
+| 7.2 | `gen_oldmemo.py` + replay | ✅ | byte-equal vs Syndace python-oldmemo (KEX + 3 messages) |
 | 7.3 | `omemo-stanza` axolotl ns | ⏳ | round-trip `eu.siacs.conversations.axolotl` |
 | 7.4 | `omemo-pep` dual-backend | ⏳ | per-peer backend selection by devicelist namespace |
 | 7.5 | oldmemo cross-impl gate | ⏳ | `python_interop --backend oldmemo` (both directions) |
@@ -136,12 +136,13 @@ git clone --depth 1 https://github.com/Syndace/python-doubleratchet.git referenc
 git clone --depth 1 https://github.com/Syndace/python-x3dh.git           reference/python-x3dh
 git clone --depth 1 https://github.com/Syndace/python-xeddsa.git         reference/python-xeddsa
 git clone --depth 1 https://github.com/Syndace/python-twomemo.git        reference/python-twomemo
+git clone --depth 1 https://github.com/Syndace/python-oldmemo.git        reference/python-oldmemo
 git clone --depth 1 https://github.com/Syndace/python-omemo.git          reference/python-omemo
 
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install doubleratchet==1.3.0 x3dh==1.3.0 xeddsa==1.2.0 twomemo==2.1.0 'omemo>=2,<3' \
+pip install doubleratchet==1.3.0 x3dh==1.3.0 xeddsa==1.2.0 twomemo==2.1.0 oldmemo==2.1.0 'omemo>=2,<3' \
             cryptography pydantic
 
 for s in scripts/gen_*.py; do python "$s"; done

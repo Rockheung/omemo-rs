@@ -23,7 +23,7 @@ Ordering reflects dependencies — do top to bottom.
 | 6.1 — python-omemo cross-impl | ✅ | `cargo test -p omemo-rs-cli --test python_interop -- --ignored` (both directions) |
 | 6.2 — Conversations / Dino | ⏳ | manual; uses `omemo-rs-cli` against the same Prosody |
 | 7.1 — `omemo-oldmemo` scaffold | ✅ | `cargo test -p omemo-oldmemo` (10 unit tests) |
-| 7.2 — `gen_oldmemo.py` + replay | ⏳ | byte-equal vs python-oldmemo on KEX + 3 messages |
+| 7.2 — `gen_oldmemo.py` + replay | ✅ | byte-equal vs python-oldmemo on KEX + 3 messages |
 | 7.3 — `omemo-stanza` axolotl ns | ⏳ | round-trip `eu.siacs.conversations.axolotl` stanzas |
 | 7.4 — `omemo-pep` dual-backend | ⏳ | per-peer backend selection by devicelist namespace |
 | 7.5 — oldmemo cross-impl gate | ⏳ | `python_interop --backend oldmemo` (both directions) |
@@ -561,16 +561,22 @@ oracle (see ADR-009 in `docs/decisions.md`).
       `aead_rejects_bad_mac`. `cargo deny check` stays green
       (no AGPL in the runtime graph).
 
-### 7.2 — `gen_oldmemo.py` + replay tests ⏳
+### 7.2 — `gen_oldmemo.py` + replay tests ✅
 
-- [ ] Clone python-oldmemo into `test-vectors/reference/` and pin in
-      `pip install` recipe (already added to README).
-- [ ] `test-vectors/scripts/gen_oldmemo.py` — deterministic seeds →
-      python-oldmemo `Backend.encrypt_initial_message` /
-      `decrypt_initial_message` outputs, serialised as
-      `fixtures/oldmemo.json`.
-- [ ] `crates/omemo-oldmemo/tests/replay.rs` — load fixture, run our
-      impl on the same inputs, byte-equal `assert_eq!`.
+- [x] Clone python-oldmemo into `test-vectors/reference/` and pin in
+      `pip install` recipe (added to both READMEs + `ci.yml` fixture-
+      drift job).
+- [x] `test-vectors/scripts/gen_oldmemo.py` — deterministic seeds →
+      python-oldmemo `DoubleRatchetImpl.encrypt_initial_message` →
+      `fixtures/oldmemo.json` (KEX + 3 follow-ups + plaintexts).
+- [x] `crates/omemo-test-harness/tests/oldmemo.rs` — load fixture, run
+      our impl on the same inputs, byte-equal `assert_eq!` on the
+      KEX bytes and on each follow-up `OMEMOAuthenticatedMessage`
+      blob; bob's passive side decrypts all four to the original
+      plaintexts.
+- [x] `session_snapshot_round_trip` test pins the SQLite-blob layout
+      against the same fixture so future schema bumps light up the
+      replay diff.
 
 ### 7.3 — `omemo-stanza` axolotl-namespace encoder/parser ⏳
 
