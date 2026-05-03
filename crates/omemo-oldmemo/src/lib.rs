@@ -600,6 +600,11 @@ impl<'a> ByteReader<'a> {
 /// `ik`/`ek` here are the **raw 32-byte X25519** public keys; this
 /// function applies the `0x05` network prefix for you. `pk_id`/`spk_id`
 /// are the IDs of the consumed OPK and SPK respectively.
+///
+/// The wire form is `0x33 || OMEMOKeyExchange.SerializeToString()` —
+/// the same `[VERSION_BYTE]` prefix that wraps follow-up
+/// `OMEMOAuthenticatedMessage`s. python-oldmemo's
+/// `KeyExchangeImpl.serialize` does the same.
 pub fn build_key_exchange(
     pk_id: u32,
     spk_id: u32,
@@ -615,7 +620,8 @@ pub fn build_key_exchange(
         message: auth_msg_blob.to_vec(),
         unused: None,
     };
-    let mut out = Vec::with_capacity(kex.encoded_len());
+    let mut out = Vec::with_capacity(1 + kex.encoded_len());
+    out.push(VERSION_BYTE);
     kex.encode(&mut out).expect("encode in-memory");
     out
 }
@@ -626,7 +632,12 @@ pub fn build_key_exchange(
 pub type ParsedKeyExchange = (u32, u32, [u8; 32], [u8; 32], Vec<u8>);
 
 pub fn parse_key_exchange(kex_bytes: &[u8]) -> Result<ParsedKeyExchange, OldmemoError> {
-    let kex = OmemoKeyExchange::decode(kex_bytes)?;
+    if kex_bytes.is_empty() || kex_bytes[0] != VERSION_BYTE {
+        return Err(OldmemoError::BadVersionByte(
+            kex_bytes.first().copied().unwrap_or(0),
+        ));
+    }
+    let kex = OmemoKeyExchange::decode(&kex_bytes[1..])?;
     let ik = parse_public_key(&kex.ik)?;
     let ek = parse_public_key(&kex.ek)?;
     Ok((kex.pk_id, kex.spk_id, ik, ek, kex.message))

@@ -150,7 +150,11 @@ async def main():
     # equal with what python-oldmemo's session orchestration would
     # have emitted.
     alice_ik_curve = xeddsa.ed25519_pub_to_curve25519_pub(alice.bundle.identity_key)
-    kex0_bytes = OMEMOKeyExchange(
+    # OMEMO 0.3 wire form for the KEX is `0x33 || OMEMOKeyExchange`,
+    # mirroring the version-byte prefix used on every per-message
+    # `OMEMOAuthenticatedMessage`. Matches python-oldmemo's
+    # `KeyExchangeImpl.serialize` which prepends the same byte.
+    kex0_bytes = b"\x33" + OMEMOKeyExchange(
         pk_id=pk_id,
         spk_id=spk_id,
         ik=b"\x05" + alice_ik_curve,
