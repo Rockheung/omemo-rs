@@ -21,6 +21,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
 
 use omemo_doubleratchet::dh_ratchet::DhPrivProvider;
+use omemo_oldmemo::{
+    parse_key_exchange as parse_kex_old, peek_dh_pub as peek_dh_pub_old, OldmemoSession,
+    OldmemoSessionSnapshot,
+};
 use omemo_twomemo::{parse_key_exchange, peek_dh_pub, TwomemoSession, TwomemoSessionSnapshot};
 use omemo_x3dh::{
     get_shared_secret_passive, Header as X3dhHeader, IdentityKeyPair, PreKeyPair, SignedPreKeyPair,
@@ -33,6 +37,8 @@ pub enum SessionStoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error("twomemo: {0}")]
     Twomemo(#[from] omemo_twomemo::TwomemoError),
+    #[error("oldmemo: {0}")]
+    Oldmemo(#[from] omemo_oldmemo::OldmemoError),
     #[error("dh ratchet: {0}")]
     DhRatchet(#[from] omemo_doubleratchet::dh_ratchet::DhRatchetError),
     #[error("x3dh: {0}")]
@@ -55,6 +61,38 @@ pub enum SessionStoreError {
 
 const SCHEMA_V1_SQL: &str = include_str!("../migrations/0001_init.sql");
 const SCHEMA_V2_SQL: &str = include_str!("../migrations/0002_trust.sql");
+const SCHEMA_V3_SQL: &str = include_str!("../migrations/0003_backend.sql");
+
+/// OMEMO wire-format backend a session uses.
+///
+/// Stored as `INTEGER` in the `session.backend` /
+/// `message_keys_skipped.backend` columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Backend {
+    /// `urn:xmpp:omemo:2` — XEP-0384 v0.9 (twomemo).
+    Twomemo = 0,
+    /// `eu.siacs.conversations.axolotl` — XEP-0384 v0.3 (oldmemo).
+    Oldmemo = 1,
+}
+
+impl Backend {
+    fn from_i64(v: i64) -> Result<Self, SessionStoreError> {
+        Ok(match v {
+            0 => Backend::Twomemo,
+            1 => Backend::Oldmemo,
+            _ => {
+                return Err(SessionStoreError::Migration {
+                    version: 3,
+                    detail: format!("unknown backend value {v}"),
+                })
+            }
+        })
+    }
+
+    pub fn as_i64(self) -> i64 {
+        self as i64
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnIdentity {
@@ -221,6 +259,14 @@ impl Store {
                 .execute_batch(SCHEMA_V2_SQL)
                 .map_err(|e| SessionStoreError::Migration {
                     version: 2,
+                    detail: e.to_string(),
+                })?;
+        }
+        if v < 3 {
+            self.conn
+                .execute_batch(SCHEMA_V3_SQL)
+                .map_err(|e| SessionStoreError::Migration {
+                    version: 3,
                     detail: e.to_string(),
                 })?;
         }
@@ -627,12 +673,18 @@ impl Store {
         let blob = session.snapshot().encode();
         let now = now_secs();
         self.conn.execute(
-            "INSERT INTO session (bare_jid, device_id, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?4)
-             ON CONFLICT(bare_jid, device_id) DO UPDATE
+            "INSERT INTO session (bare_jid, device_id, backend, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(bare_jid, device_id, backend) DO UPDATE
                 SET state = excluded.state,
                     updated_at = excluded.updated_at",
-            params![bare_jid, device_id, &blob[..], now],
+            params![
+                bare_jid,
+                device_id,
+                Backend::Twomemo.as_i64(),
+                &blob[..],
+                now
+            ],
         )?;
         Ok(())
     }
@@ -645,8 +697,8 @@ impl Store {
         let blob: Option<Vec<u8>> = self
             .conn
             .query_row(
-                "SELECT state FROM session WHERE bare_jid = ?1 AND device_id = ?2",
-                params![bare_jid, device_id],
+                "SELECT state FROM session WHERE bare_jid = ?1 AND device_id = ?2 AND backend = ?3",
+                params![bare_jid, device_id, Backend::Twomemo.as_i64()],
                 |r| r.get(0),
             )
             .optional()?;
@@ -662,10 +714,87 @@ impl Store {
         device_id: u32,
     ) -> Result<bool, SessionStoreError> {
         let n = self.conn.execute(
-            "DELETE FROM session WHERE bare_jid = ?1 AND device_id = ?2",
-            params![bare_jid, device_id],
+            "DELETE FROM session WHERE bare_jid = ?1 AND device_id = ?2 AND backend = ?3",
+            params![bare_jid, device_id, Backend::Twomemo.as_i64()],
         )?;
         Ok(n > 0)
+    }
+
+    // ---- session (oldmemo) -----------------------------------------------
+
+    pub fn save_oldmemo_session(
+        &mut self,
+        bare_jid: &str,
+        device_id: u32,
+        session: &OldmemoSession,
+    ) -> Result<(), SessionStoreError> {
+        let blob = session.snapshot().encode();
+        let now = now_secs();
+        self.conn.execute(
+            "INSERT INTO session (bare_jid, device_id, backend, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(bare_jid, device_id, backend) DO UPDATE
+                SET state = excluded.state,
+                    updated_at = excluded.updated_at",
+            params![
+                bare_jid,
+                device_id,
+                Backend::Oldmemo.as_i64(),
+                &blob[..],
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_oldmemo_session_snapshot(
+        &self,
+        bare_jid: &str,
+        device_id: u32,
+    ) -> Result<Option<OldmemoSessionSnapshot>, SessionStoreError> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT state FROM session WHERE bare_jid = ?1 AND device_id = ?2 AND backend = ?3",
+                params![bare_jid, device_id, Backend::Oldmemo.as_i64()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(match blob {
+            Some(b) => Some(OldmemoSessionSnapshot::decode(&b)?),
+            None => None,
+        })
+    }
+
+    pub fn delete_oldmemo_session(
+        &mut self,
+        bare_jid: &str,
+        device_id: u32,
+    ) -> Result<bool, SessionStoreError> {
+        let n = self.conn.execute(
+            "DELETE FROM session WHERE bare_jid = ?1 AND device_id = ?2 AND backend = ?3",
+            params![bare_jid, device_id, Backend::Oldmemo.as_i64()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Inspect which backends have a session row for a given peer
+    /// device. Used by the dispatch layer to pick the best available
+    /// backend at send time.
+    pub fn session_backends(
+        &self,
+        bare_jid: &str,
+        device_id: u32,
+    ) -> Result<Vec<Backend>, SessionStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT backend FROM session WHERE bare_jid = ?1 AND device_id = ?2 ORDER BY backend",
+        )?;
+        let rows = stmt.query_map(params![bare_jid, device_id], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(Backend::from_i64(row?)?);
+        }
+        Ok(out)
     }
 
     /// Atomically mark `opk_id` consumed and persist `session` for the
@@ -687,12 +816,54 @@ impl Store {
             params![opk_id],
         )?;
         tx.execute(
-            "INSERT INTO session (bare_jid, device_id, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?4)
-             ON CONFLICT(bare_jid, device_id) DO UPDATE
+            "INSERT INTO session (bare_jid, device_id, backend, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(bare_jid, device_id, backend) DO UPDATE
                 SET state = excluded.state,
                     updated_at = excluded.updated_at",
-            params![peer_jid, peer_device_id, &blob[..], now],
+            params![
+                peer_jid,
+                peer_device_id,
+                Backend::Twomemo.as_i64(),
+                &blob[..],
+                now
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Atomic OPK-consume + oldmemo-session-save, mirror of
+    /// [`Self::commit_first_inbound`] for the OMEMO 0.3 flow. The
+    /// caller has already produced the [`OldmemoSession`] (e.g. via
+    /// `decrypt_inbound_kex_oldmemo` in `omemo-pep`).
+    pub fn commit_first_inbound_oldmemo(
+        &mut self,
+        peer_jid: &str,
+        peer_device_id: u32,
+        opk_id: u32,
+        session: &OldmemoSession,
+    ) -> Result<(), SessionStoreError> {
+        let blob = session.snapshot().encode();
+        let now = now_secs();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE prekey SET consumed = 1 WHERE id = ?1 AND consumed = 0",
+            params![opk_id],
+        )?;
+        tx.execute(
+            "INSERT INTO session (bare_jid, device_id, backend, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(bare_jid, device_id, backend) DO UPDATE
+                SET state = excluded.state,
+                    updated_at = excluded.updated_at",
+            params![
+                peer_jid,
+                peer_device_id,
+                Backend::Oldmemo.as_i64(),
+                &blob[..],
+                now
+            ],
         )?;
         tx.commit()?;
         Ok(())
@@ -777,12 +948,109 @@ impl Store {
             params![pk_id],
         )?;
         tx.execute(
-            "INSERT INTO session (bare_jid, device_id, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?4)
-             ON CONFLICT(bare_jid, device_id) DO UPDATE
+            "INSERT INTO session (bare_jid, device_id, backend, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(bare_jid, device_id, backend) DO UPDATE
                 SET state = excluded.state,
                     updated_at = excluded.updated_at",
-            params![peer_jid, peer_device_id, &blob[..], now],
+            params![
+                peer_jid,
+                peer_device_id,
+                Backend::Twomemo.as_i64(),
+                &blob[..],
+                now
+            ],
+        )?;
+        tx.commit()?;
+
+        Ok(plaintext)
+    }
+
+    /// OMEMO 0.3 (oldmemo) counterpart of
+    /// [`Self::receive_initial_message`]. Same X3DH passive flow,
+    /// but the KEX is parsed via `omemo_oldmemo` and the resulting
+    /// session is an `OldmemoSession`. The IK in the OMEMO 0.3 KEX
+    /// is the **Curve25519** form (32 bytes, 0x05 prefix already
+    /// stripped by `parse_kex_old`); the X3DH state we build here
+    /// expects the Ed25519 form, so the caller is responsible for
+    /// performing the curve→ed conversion (with the correct sign
+    /// bit drawn from the trusted devicelist) before calling.
+    pub fn receive_initial_message_oldmemo(
+        &mut self,
+        peer_jid: &str,
+        peer_device_id: u32,
+        peer_ik_pub_ed: [u8; 32],
+        kex_bytes: &[u8],
+        priv_provider: Box<dyn DhPrivProvider>,
+    ) -> Result<Vec<u8>, SessionStoreError> {
+        let identity = self
+            .get_identity()?
+            .ok_or(SessionStoreError::IdentityMissing)?;
+        let (pk_id, spk_id, _peer_ik_curve, peer_ek_pub, auth_msg_blob) =
+            parse_kex_old(kex_bytes)?;
+        let spk = self
+            .get_spk(spk_id)?
+            .ok_or(SessionStoreError::UnknownSpkId(spk_id))?;
+        let opk = self
+            .get_opk(pk_id)?
+            .ok_or(SessionStoreError::UnknownPkId(pk_id))?;
+        if opk.consumed {
+            return Err(SessionStoreError::PreKeyAlreadyConsumed(pk_id));
+        }
+
+        let own_state = X3dhState {
+            identity_key: IdentityKeyPair::Seed(identity.ik_seed),
+            signed_pre_key: SignedPreKeyPair {
+                priv_key: spk.priv_key,
+                sig: spk.sig,
+                timestamp: spk.created_at as u64,
+            },
+            old_signed_pre_key: None,
+            pre_keys: vec![PreKeyPair {
+                priv_key: opk.priv_key,
+            }],
+        };
+        let header = X3dhHeader {
+            identity_key: peer_ik_pub_ed,
+            ephemeral_key: peer_ek_pub,
+            signed_pre_key: spk.pub_key,
+            pre_key: Some(opk.pub_key),
+        };
+        // OMEMO 0.3 X3DH: info "WhisperText", AD = enc(their)||enc(own)
+        // — handled inside `get_shared_secret_passive_oldmemo`.
+        let (x3dh_out, _used_spk) =
+            omemo_x3dh::get_shared_secret_passive_oldmemo(&own_state, &header, b"", true)?;
+
+        let alice_first_dh_pub = peek_dh_pub_old(&auth_msg_blob)?;
+        let mut session = OldmemoSession::create_passive(
+            x3dh_out.associated_data,
+            x3dh_out.shared_secret.to_vec(),
+            spk.priv_key,
+            alice_first_dh_pub,
+            priv_provider,
+        )?;
+        let plaintext = session.decrypt_message(&auth_msg_blob)?;
+
+        let blob = session.snapshot().encode();
+        let now = now_secs();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE prekey SET consumed = 1 WHERE id = ?1 AND consumed = 0",
+            params![pk_id],
+        )?;
+        tx.execute(
+            "INSERT INTO session (bare_jid, device_id, backend, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(bare_jid, device_id, backend) DO UPDATE
+                SET state = excluded.state,
+                    updated_at = excluded.updated_at",
+            params![
+                peer_jid,
+                peer_device_id,
+                Backend::Oldmemo.as_i64(),
+                &blob[..],
+                now
+            ],
         )?;
         tx.commit()?;
 

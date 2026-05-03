@@ -32,6 +32,14 @@ pub const SHARED_SECRET_SIZE: usize = 32;
 /// OMEMO 2 X3DH info string. Matches `twomemo.StateImpl.INFO`.
 pub const OMEMO_X3DH_INFO: &[u8] = b"OMEMO X3DH";
 
+/// OMEMO 0.3 X3DH info string. Matches `oldmemo.StateImpl.INFO`.
+pub const OMEMO_OLD_X3DH_INFO: &[u8] = b"WhisperText";
+
+/// 0x05 prefix byte used by OMEMO 0.3's `_encode_public_key` —
+/// every public key on the wire (and inside AssociatedData) is
+/// encoded as `0x05 || curve25519_pub` (33 bytes).
+pub const OLDMEMO_PUBKEY_PREFIX: u8 = 0x05;
+
 #[derive(Debug, Error)]
 pub enum X3dhError {
     #[error("signed pre key signature did not verify")]
@@ -356,6 +364,194 @@ pub fn get_shared_secret_passive(
     ad.extend_from_slice(&header.identity_key);
     ad.extend_from_slice(&own_ik_pub_ed);
     ad.extend_from_slice(associated_data_appendix);
+
+    let mut ikm_clear = ikm;
+    ikm_clear.zeroize();
+
+    Ok((
+        X3dhAgreementOutput {
+            shared_secret,
+            associated_data: ad,
+        },
+        spk,
+    ))
+}
+
+/// Encode a 32-byte Curve25519 (or Ed25519-then-converted) pubkey
+/// in OMEMO 0.3's `_encode_public_key` format: `0x05 || pub`.
+fn enc_old_pub(pub_key: &[u8; 32]) -> [u8; 33] {
+    let mut out = [0u8; 33];
+    out[0] = OLDMEMO_PUBKEY_PREFIX;
+    out[1..].copy_from_slice(pub_key);
+    out
+}
+
+/// Build the AssociatedData for OMEMO 0.3: the two identity keys
+/// (each as 33-byte 0x05-prefixed Curve25519) concatenated, then
+/// the appendix. Matches python-oldmemo's StateImpl + the AD shape
+/// our `omemo_oldmemo::build_associated_data` parses (66 bytes
+/// before the trailing OMEMOMessage header).
+fn ad_old(their_ik_ed: &[u8; 32], own_ik_ed: &[u8; 32], appendix: &[u8]) -> Result<Vec<u8>, X3dhError> {
+    let their_curve = omemo_xeddsa::ed25519_pub_to_curve25519_pub(their_ik_ed)?;
+    let own_curve = omemo_xeddsa::ed25519_pub_to_curve25519_pub(own_ik_ed)?;
+    let mut ad = Vec::with_capacity(33 + 33 + appendix.len());
+    // Note ordering: passive AD is (their || own); active AD is
+    // (own || their). Caller hands us their_ik_ed first.
+    ad.extend_from_slice(&enc_old_pub(&their_curve));
+    ad.extend_from_slice(&enc_old_pub(&own_curve));
+    ad.extend_from_slice(appendix);
+    Ok(ad)
+}
+
+/// Active key agreement (Alice), OMEMO 0.3 flavour. Same DH steps
+/// as [`get_shared_secret_active`], with two deltas:
+///
+/// * HKDF info is `b"WhisperText"` instead of `b"OMEMO X3DH"`.
+/// * AssociatedData is `enc(own_ik) || enc(their_ik) || appendix`
+///   (each enc(.) is `0x05 || curve25519_pub`, 33 bytes; total
+///   pre-appendix = 66 bytes).
+pub fn get_shared_secret_active_oldmemo(
+    own_state: &X3dhState,
+    bundle: &Bundle,
+    associated_data_appendix: &[u8],
+    ephemeral_priv: [u8; 32],
+    chosen_opk_pub: Option<[u8; PUB_SIZE]>,
+    require_pre_key: bool,
+) -> Result<(X3dhAgreementOutput, Header), X3dhError> {
+    if bundle.pre_keys.is_empty() && require_pre_key {
+        return Err(X3dhError::NoPreKeyAvailable);
+    }
+    verify_bundle(bundle)?;
+    let opk_pub = match chosen_opk_pub {
+        Some(p) => {
+            if !bundle.pre_keys.contains(&p) {
+                return Err(X3dhError::UnknownChosenPreKey);
+            }
+            Some(p)
+        }
+        None => {
+            if require_pre_key {
+                return Err(X3dhError::NoPreKeyAvailable);
+            }
+            None
+        }
+    };
+
+    let own_ik_priv = own_state.identity_key.priv_bytes();
+    let own_ik_pub_ed = own_state.identity_key.ed25519_pub();
+    let other_ik_pub_curve = omemo_xeddsa::ed25519_pub_to_curve25519_pub(&bundle.identity_key)?;
+
+    let dh1 = omemo_xeddsa::x25519(&own_ik_priv, &bundle.signed_pre_key)?;
+    let dh2 = omemo_xeddsa::x25519(&ephemeral_priv, &other_ik_pub_curve)?;
+    let dh3 = omemo_xeddsa::x25519(&ephemeral_priv, &bundle.signed_pre_key)?;
+    let dh4 = match opk_pub {
+        Some(p) => Some(omemo_xeddsa::x25519(&ephemeral_priv, &p)?),
+        None => None,
+    };
+
+    let mut ikm = Vec::with_capacity(32 + 32 * 4);
+    ikm.extend_from_slice(&[0xFFu8; 32]);
+    ikm.extend_from_slice(&dh1);
+    ikm.extend_from_slice(&dh2);
+    ikm.extend_from_slice(&dh3);
+    if let Some(d) = dh4.as_ref() {
+        ikm.extend_from_slice(d);
+    }
+
+    let ss_vec = hkdf_sha256_derive(&ikm, OMEMO_OLD_X3DH_INFO, SHARED_SECRET_SIZE);
+    let mut shared_secret = [0u8; SHARED_SECRET_SIZE];
+    shared_secret.copy_from_slice(&ss_vec);
+
+    // Active AD: enc(own_ik) || enc(their_ik) || appendix
+    // (mirrors get_shared_secret_active's ordering).
+    let own_ik_curve = omemo_xeddsa::ed25519_pub_to_curve25519_pub(&own_ik_pub_ed)?;
+    let mut ad = Vec::with_capacity(33 + 33 + associated_data_appendix.len());
+    ad.extend_from_slice(&enc_old_pub(&own_ik_curve));
+    ad.extend_from_slice(&enc_old_pub(&other_ik_pub_curve));
+    ad.extend_from_slice(associated_data_appendix);
+
+    let ek_pub = omemo_xeddsa::priv_to_curve25519_pub(&ephemeral_priv);
+    let header = Header {
+        identity_key: own_ik_pub_ed,
+        ephemeral_key: ek_pub,
+        signed_pre_key: bundle.signed_pre_key,
+        pre_key: opk_pub,
+    };
+
+    let mut ikm_clear = ikm;
+    ikm_clear.zeroize();
+
+    Ok((
+        X3dhAgreementOutput {
+            shared_secret,
+            associated_data: ad,
+        },
+        header,
+    ))
+}
+
+/// Passive key agreement (Bob), OMEMO 0.3 flavour. Mirror of
+/// [`get_shared_secret_passive`] with the OMEMO-0.3 info/AD.
+pub fn get_shared_secret_passive_oldmemo(
+    own_state: &X3dhState,
+    header: &Header,
+    associated_data_appendix: &[u8],
+    require_pre_key: bool,
+) -> Result<(X3dhAgreementOutput, SignedPreKeyPair), X3dhError> {
+    let spk = if header.signed_pre_key == own_state.signed_pre_key.pub_key() {
+        own_state.signed_pre_key.clone()
+    } else if let Some(old) = own_state
+        .old_signed_pre_key
+        .as_ref()
+        .filter(|s| s.pub_key() == header.signed_pre_key)
+    {
+        old.clone()
+    } else {
+        return Err(X3dhError::SpkUnavailable);
+    };
+
+    let opk_priv = match header.pre_key {
+        Some(opk_pub) => own_state
+            .pre_keys
+            .iter()
+            .find(|pk| pk.pub_key() == opk_pub)
+            .map(|pk| pk.priv_key)
+            .ok_or(X3dhError::OpkUnavailable)?,
+        None => {
+            if require_pre_key {
+                return Err(X3dhError::HeaderHasNoPreKey);
+            }
+            [0u8; 32]
+        }
+    };
+
+    let own_ik_priv = own_state.identity_key.priv_bytes();
+    let own_ik_pub_ed = own_state.identity_key.ed25519_pub();
+    let other_ik_pub_curve = omemo_xeddsa::ed25519_pub_to_curve25519_pub(&header.identity_key)?;
+
+    let dh1 = omemo_xeddsa::x25519(&spk.priv_key, &other_ik_pub_curve)?;
+    let dh2 = omemo_xeddsa::x25519(&own_ik_priv, &header.ephemeral_key)?;
+    let dh3 = omemo_xeddsa::x25519(&spk.priv_key, &header.ephemeral_key)?;
+    let dh4 = match header.pre_key {
+        Some(_) => Some(omemo_xeddsa::x25519(&opk_priv, &header.ephemeral_key)?),
+        None => None,
+    };
+
+    let mut ikm = Vec::with_capacity(32 + 32 * 4);
+    ikm.extend_from_slice(&[0xFFu8; 32]);
+    ikm.extend_from_slice(&dh1);
+    ikm.extend_from_slice(&dh2);
+    ikm.extend_from_slice(&dh3);
+    if let Some(d) = dh4.as_ref() {
+        ikm.extend_from_slice(d);
+    }
+
+    let ss_vec = hkdf_sha256_derive(&ikm, OMEMO_OLD_X3DH_INFO, SHARED_SECRET_SIZE);
+    let mut shared_secret = [0u8; SHARED_SECRET_SIZE];
+    shared_secret.copy_from_slice(&ss_vec);
+
+    // Passive AD: their || own.
+    let ad = ad_old(&header.identity_key, &own_ik_pub_ed, associated_data_appendix)?;
 
     let mut ikm_clear = ikm;
     ikm_clear.zeroize();

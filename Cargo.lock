@@ -1387,6 +1387,7 @@ name = "omemo-session"
 version = "0.0.1"
 dependencies = [
  "omemo-doubleratchet",
+ "omemo-oldmemo",
  "omemo-twomemo",
  "omemo-x3dh",
  "omemo-xeddsa",

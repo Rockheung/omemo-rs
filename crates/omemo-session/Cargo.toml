@@ -4,13 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "SQLite-backed persistence for OMEMO 2 identities, bundles, sessions, and device lists."
+description = "SQLite-backed persistence for OMEMO 2 + OMEMO 0.3 identities, bundles, sessions, and device lists."
 
 [dependencies]
 rusqlite = { workspace = true }
 thiserror = { workspace = true }
 
 omemo-twomemo = { path = "../omemo-twomemo" }
+omemo-oldmemo = { path = "../omemo-oldmemo" }
 omemo-x3dh = { path = "../omemo-x3dh" }
 omemo-doubleratchet = { path = "../omemo-doubleratchet" }
 
