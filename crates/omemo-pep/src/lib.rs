@@ -18,25 +18,38 @@
 //! `jid`) per ADR-007. Our own code remains MIT.
 
 pub use jid::BareJid;
+pub use omemo_stanza::axolotl_stanza::{
+    Bundle as OldBundle, DeviceList as OldDeviceList, Encrypted as OldEncrypted,
+    KeyEntry as OldKeyEntry, PreKey as OldPreKey,
+};
 pub use omemo_stanza::{
     Bundle, Device, DeviceList, Encrypted, Key, KeysGroup, PreKey, SignedPreKey,
 };
+pub use omemo_session::Backend;
 pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event};
 
 mod message;
+mod message_old;
 mod muc;
 mod pep;
 mod store;
+mod store_old;
 mod wire;
 
 pub use message::{
     bootstrap_active_session_from_bundle, decrypt_inbound_kex, decrypt_message, encrypt_message,
     inbound_kind, InboundKind, KexCarrier, MessageError, Recipient,
 };
+pub use message_old::{
+    bootstrap_active_session_oldmemo_from_bundle, decrypt_inbound_kex_oldmemo,
+    decrypt_message_oldmemo, encrypt_message_oldmemo, inbound_kind_oldmemo, InboundOldKind,
+    KexCarrierOld, MessageOldError, RecipientOld,
+};
 pub use muc::{MucError, MucEvent, MucRoom, Occupant};
 pub use pep::{
-    fetch_bundle, fetch_device_list, publish_bundle, publish_device_list, PepError, BUNDLES_NODE,
-    DEVICES_NODE, ITEM_ID_CURRENT,
+    fetch_bundle, fetch_device_list, fetch_old_bundle, fetch_old_device_list, publish_bundle,
+    publish_device_list, publish_old_bundle, publish_old_device_list, PepError, BUNDLES_NODE,
+    DEVICES_NODE, ITEM_ID_CURRENT, OLD_BUNDLES_NODE_PREFIX, OLD_DEVICES_NODE,
 };
 pub use store::{
     bootstrap_and_save_active, bundle_from_store, encrypt_to_peer, encrypt_to_peers,
@@ -44,7 +57,14 @@ pub use store::{
     receive_followup, replenish_opks, x3dh_state_from_store, IdentitySeed, InboundEnvelope,
     PeerSpec, StoreFlowError, TrustPolicy,
 };
-pub use wire::{send_encrypted, wait_for_encrypted, WireError};
+pub use store_old::{
+    bootstrap_and_save_active_oldmemo, encrypt_to_peer_oldmemo, old_bundle_from_store,
+    receive_first_message_oldmemo, receive_followup_oldmemo,
+};
+pub use wire::{
+    send_encrypted, send_encrypted_old, wait_for_encrypted, wait_for_encrypted_any, EncryptedAny,
+    WireError,
+};
 
 pub use omemo_session::{OwnIdentity, SessionStoreError, Store, TrustState, TrustedDevice};
 

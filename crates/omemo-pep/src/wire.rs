@@ -9,6 +9,7 @@ use std::str::FromStr;
 
 use futures_util::StreamExt;
 use jid::{BareJid, Jid};
+use omemo_stanza::axolotl_stanza::{Encrypted as OldEncrypted, NS as OMEMO_OLD_NS};
 use omemo_stanza::Encrypted;
 use thiserror::Error;
 use tokio_xmpp::{Client, Event, Stanza};
@@ -17,6 +18,17 @@ use xmpp_parsers::minidom::Element;
 
 const OMEMO2_NS: &str = "urn:xmpp:omemo:2";
 const ENCRYPTED_ELEM: &str = "encrypted";
+
+/// Either-flavour incoming `<encrypted>` payload.
+///
+/// Returned by [`wait_for_encrypted_any`] so a caller running both
+/// backends in parallel doesn't have to know in advance which one a
+/// given message will use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncryptedAny {
+    Twomemo(Encrypted),
+    Oldmemo(OldEncrypted),
+}
 
 #[derive(Debug, Error)]
 pub enum WireError {
@@ -38,6 +50,20 @@ pub async fn send_encrypted(
     client: &mut Client,
     to: BareJid,
     encrypted: &Encrypted,
+) -> Result<(), WireError> {
+    let xml = encrypted.encode().map_err(WireError::Encode)?;
+    let elem = Element::from_str(&xml).map_err(|e| WireError::Minidom(e.to_string()))?;
+    let msg = XmppMessage::chat(Some(Jid::from(to))).with_payloads(vec![elem]);
+    client.send_stanza(msg.into()).await?;
+    Ok(())
+}
+
+/// Send a `<message type="chat" to=peer>` carrying an OMEMO 0.3
+/// `<encrypted xmlns='eu.siacs.conversations.axolotl'>` payload.
+pub async fn send_encrypted_old(
+    client: &mut Client,
+    to: BareJid,
+    encrypted: &OldEncrypted,
 ) -> Result<(), WireError> {
     let xml = encrypted.encode().map_err(WireError::Encode)?;
     let elem = Element::from_str(&xml).map_err(|e| WireError::Minidom(e.to_string()))?;
@@ -68,6 +94,40 @@ pub async fn wait_for_encrypted(
         let parsed = Encrypted::parse(&xml).map_err(WireError::Parse)?;
         let from = msg.from.as_ref().map(|j| j.to_bare());
         return Ok((from, parsed));
+    }
+    Err(WireError::StreamEnded)
+}
+
+/// Dual-backend variant of [`wait_for_encrypted`]. Returns the first
+/// `<encrypted>` payload arriving in *either* the OMEMO 2 namespace or
+/// the OMEMO 0.3 (`eu.siacs.conversations.axolotl`) namespace, wrapped
+/// in [`EncryptedAny`] so the caller can dispatch by protocol.
+pub async fn wait_for_encrypted_any(
+    client: &mut Client,
+) -> Result<(Option<BareJid>, EncryptedAny), WireError> {
+    while let Some(event) = client.next().await {
+        let Event::Stanza(Stanza::Message(msg)) = event else {
+            continue;
+        };
+        let from = msg.from.as_ref().map(|j| j.to_bare());
+        for p in &msg.payloads {
+            if p.name() != ENCRYPTED_ELEM {
+                continue;
+            }
+            match p.ns().as_str() {
+                OMEMO2_NS => {
+                    let xml = String::from(p);
+                    let parsed = Encrypted::parse(&xml).map_err(WireError::Parse)?;
+                    return Ok((from, EncryptedAny::Twomemo(parsed)));
+                }
+                OMEMO_OLD_NS => {
+                    let xml = String::from(p);
+                    let parsed = OldEncrypted::parse(&xml).map_err(WireError::Parse)?;
+                    return Ok((from, EncryptedAny::Oldmemo(parsed)));
+                }
+                _ => {}
+            }
+        }
     }
     Err(WireError::StreamEnded)
 }

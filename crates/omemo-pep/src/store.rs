@@ -104,7 +104,7 @@ pub enum TrustPolicy {
 }
 
 impl TrustPolicy {
-    fn default_state(self) -> TrustState {
+    pub(crate) fn default_state(self) -> TrustState {
         match self {
             TrustPolicy::Tofu => TrustState::Trusted,
             TrustPolicy::Manual => TrustState::Pending,

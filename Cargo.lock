@@ -1353,6 +1353,7 @@ dependencies = [
  "futures-util",
  "jid",
  "omemo-doubleratchet",
+ "omemo-oldmemo",
  "omemo-session",
  "omemo-stanza",
  "omemo-twomemo",

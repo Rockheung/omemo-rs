@@ -18,6 +18,7 @@ rand_core = { workspace = true }
 
 omemo-stanza = { path = "../omemo-stanza" }
 omemo-twomemo = { path = "../omemo-twomemo" }
+omemo-oldmemo = { path = "../omemo-oldmemo" }
 omemo-doubleratchet = { path = "../omemo-doubleratchet" }
 omemo-x3dh = { path = "../omemo-x3dh" }
 omemo-xeddsa = { path = "../omemo-xeddsa" }

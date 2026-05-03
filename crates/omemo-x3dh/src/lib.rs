@@ -196,6 +196,23 @@ pub fn verify_bundle(bundle: &Bundle) -> Result<(), X3dhError> {
     Ok(())
 }
 
+/// OMEMO 0.3 SPK signature verifier. The signature is over the
+/// **encoded** SPK pub (`0x05 || curve25519_spk_pub`, 33 bytes), not
+/// the raw 32 bytes that OMEMO 2 signs.
+pub fn verify_bundle_oldmemo(bundle: &Bundle) -> Result<(), X3dhError> {
+    let mut encoded_spk = [0u8; 33];
+    encoded_spk[0] = OLDMEMO_PUBKEY_PREFIX;
+    encoded_spk[1..].copy_from_slice(&bundle.signed_pre_key);
+    if !omemo_xeddsa::ed25519_verify(
+        &bundle.signed_pre_key_sig,
+        &bundle.identity_key,
+        &encoded_spk,
+    ) {
+        return Err(X3dhError::BadSpkSignature);
+    }
+    Ok(())
+}
+
 fn hkdf_sha256_derive(ikm: &[u8], info: &[u8], length: usize) -> Vec<u8> {
     let salt = [0u8; 32];
     let mut out = vec![0u8; length];
@@ -421,7 +438,7 @@ pub fn get_shared_secret_active_oldmemo(
     if bundle.pre_keys.is_empty() && require_pre_key {
         return Err(X3dhError::NoPreKeyAvailable);
     }
-    verify_bundle(bundle)?;
+    verify_bundle_oldmemo(bundle)?;
     let opk_pub = match chosen_opk_pub {
         Some(p) => {
             if !bundle.pre_keys.contains(&p) {
