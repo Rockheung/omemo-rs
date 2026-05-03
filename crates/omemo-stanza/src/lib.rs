@@ -13,6 +13,8 @@
 //! canonical order so that round-trip output is byte-stable. Element key
 //! material is base64-encoded on the wire (RFC 4648, no line wrapping).
 
+pub mod axolotl_aead;
+pub mod axolotl_stanza;
 pub mod sce;
 
 use std::borrow::Cow;
@@ -48,6 +50,20 @@ pub enum StanzaError {
     UnexpectedElement(String),
     #[error("xml utf-8: {0}")]
     Utf8(#[from] std::str::Utf8Error),
+    #[error("expected 33-byte 0x05-prefixed Curve25519 pubkey on the wire; got {0} bytes")]
+    BadEncodedPubkeyLength(usize),
+    #[error("expected 0x05 Curve25519 pubkey prefix; got 0x{0:02x}")]
+    BadPubkeyPrefix(u8),
+    #[error("signedPreKeySignature must be 64 bytes; got {0}")]
+    MalformedSignedPreKeySignature(usize),
+    #[error("xeddsa: {0}")]
+    XEdDsa(omemo_xeddsa::XEdDsaError),
+}
+
+impl From<omemo_xeddsa::XEdDsaError> for StanzaError {
+    fn from(e: omemo_xeddsa::XEdDsaError) -> Self {
+        StanzaError::XEdDsa(e)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -139,14 +155,17 @@ pub(crate) fn req_attr<'a>(
     attr_str(start, name)?.ok_or(StanzaError::MissingAttr(name))
 }
 
-fn parse_u32(name: &'static str, value: &str) -> Result<u32, StanzaError> {
+pub(crate) fn parse_u32(name: &'static str, value: &str) -> Result<u32, StanzaError> {
     value.parse::<u32>().map_err(|_| StanzaError::NotU32 {
         attr: name.to_string(),
         got: value.to_string(),
     })
 }
 
-fn req_u32_attr<'a>(start: &'a BytesStart<'a>, name: &'static str) -> Result<u32, StanzaError> {
+pub(crate) fn req_u32_attr<'a>(
+    start: &'a BytesStart<'a>,
+    name: &'static str,
+) -> Result<u32, StanzaError> {
     parse_u32(name, &req_attr(start, name)?)
 }
 
