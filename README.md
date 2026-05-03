@@ -37,7 +37,7 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 7.2 | `gen_oldmemo.py` + replay | ✅ | byte-equal vs Syndace python-oldmemo (KEX + 3 messages) |
 | 7.3 | `omemo-stanza` axolotl ns | ✅ | round-trip `eu.siacs.conversations.axolotl` + AES-128-GCM body |
 | 7.4 | `omemo-pep` dual-backend | ✅ | parallel `*_oldmemo` flow + dual-namespace `wait_for_encrypted_any` |
-| 7.5 | oldmemo cross-impl gate | ⏳ | `python_interop --backend oldmemo` (both directions) |
+| 7.5 | oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real Prosody |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
 fixture. `cargo test --workspace` passes 64 unit/replay tests; an

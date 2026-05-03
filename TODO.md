@@ -26,7 +26,7 @@ Ordering reflects dependencies — do top to bottom.
 | 7.2 — `gen_oldmemo.py` + replay | ✅ | byte-equal vs python-oldmemo on KEX + 3 messages |
 | 7.3 — `omemo-stanza` axolotl ns | ✅ | round-trip `eu.siacs.conversations.axolotl` stanzas + AES-128-GCM body |
 | 7.4 — `omemo-pep` dual-backend | ✅ | parallel `*_oldmemo` flows + dual-namespace `wait_for_encrypted_any` |
-| 7.5 — oldmemo cross-impl gate | ⏳ | `python_interop --backend oldmemo` (both directions) |
+| 7.5 — oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real Prosody |
 
 **Stages 1–5 + 4-FU.1..4 + 5-FU.1..4 + Stage 6.1 + Stage 7.1 complete.**
 Three `omemo-pep` clients exchange OMEMO 2 group-chat messages
@@ -637,18 +637,39 @@ oracle (see ADR-009 in `docs/decisions.md`).
       dedicated subcommand. Self-publishing on *both* namespaces
       simultaneously is similarly deferred to the CLI integration.
 
-### 7.5 — GATE: omemo-rs ↔ python-oldmemo cross-impl interop ⏳
+### 7.5 — GATE: omemo-rs ↔ python-oldmemo cross-impl interop ✅
 
-- [ ] `interop_client.py` gains `--backend oldmemo` toggle.
-- [ ] `python_interop.rs` gains a parallel pair of test cases
-      (`rust_send_python_recv_via_omemo03` and
-      `python_send_rust_recv_via_omemo03`), serialised by
-      `serial_test::serial`.
-- [ ] CI `integration.yml` runs the new cases alongside the OMEMO 2
-      ones, with `pip install oldmemo==2.1.0` already present.
-- [ ] Dedicated `pyold_a` / `pyold_b` Prosody accounts in the
-      Dockerfile entrypoint (avoid colliding with `pyint_*` /
-      `cli_*`).
+- [x] `omemo-rs-cli` gains a `--backend [twomemo|oldmemo]` flag on
+      `send`. `recv` auto-dispatches via `wait_for_encrypted_any`
+      and inbound namespace.
+- [x] `omemo-rs-cli`'s `publish_identity` publishes our identity on
+      *both* OMEMO 2 and OMEMO 0.3 namespaces simultaneously, so a
+      peer running either backend can find us.
+- [x] `interop_client.py` gains `--backend [twomemo|oldmemo]` —
+      OMEMO 0.3 path uses raw body bytes (no SCE) and rides the
+      slixmpp-omemo encrypt/decrypt happy path.
+- [x] `python_interop.rs` gains the parallel pair
+      `rust_send_python_recv_via_omemo03` and
+      `python_send_rust_recv_via_omemo03`, reusing the same
+      `pyint_a` / `pyint_b` Prosody accounts (each test gets a
+      fresh tempdir so persistent state doesn't leak across runs).
+- [x] Discovered + fixed: OMEMO 0.3 wire form for the KEX is
+      `0x33 || OMEMOKeyExchange.SerializeToString()` (mirroring
+      python-oldmemo's `KeyExchangeImpl.serialize`); my initial
+      `omemo-oldmemo::build_key_exchange` / `parse_key_exchange`
+      omitted the `0x33` prefix. `gen_oldmemo.py` and the
+      `gate_oldmemo_kex_plus_three` replay test were updated
+      accordingly so the in-process fixture and the live wire stay
+      in lockstep.
+- [x] **GATE GREEN**: all 4 `python_interop` tests pass on real
+      Prosody — `rust_send_python_recv_via_omemo2`,
+      `python_send_rust_recv_via_omemo2`,
+      `rust_send_python_recv_via_omemo03`,
+      `python_send_rust_recv_via_omemo03`.
+- [ ] CI `integration.yml` already has `pip install oldmemo==2.1.0`
+      from the Stage 7.2 commit; the new tests will be picked up
+      automatically by the existing `cargo test --test python_interop
+      -- --ignored --test-threads=1` invocation.
 
 ---
 

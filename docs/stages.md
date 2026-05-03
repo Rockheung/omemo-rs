@@ -4,26 +4,30 @@ This is the master plan, with definition-of-done criteria ("gates") for each
 stage. A stage is not done until its gate test is green. The TODO.md at the
 repo root is the live, checkbox-style derivative of this document.
 
-**Status (2026-05-02)**: Stages 0–5 + Stage 6.1 + 5-FU.1..4 + Stage
-7.1 done. Crypto layer is byte-equal with the Syndace Python stack,
-XEP-0384 v0.9 stanzas round-trip canonically, SQLite-backed
-identity/SPK/OPK/session persistence is the system of record on both
-sides of the gate, message bodies are wrapped in XEP-0420 SCE
-envelopes with `<to>`-verification on inbound, peer devices are
-tracked under a TOFU/Manual trust policy with IK-drift detection,
-production deployments ship StartTLS via `connect_starttls` (rustls +
-aws-lc-rs + native cert validation), two `omemo-pep` instances
-exchange three OMEMO 2 chat messages over a real Prosody
-(`tests/gate.rs`), three `omemo-pep` instances exchange OMEMO 2
-group-chat messages over a real Prosody MUC
+**Status (2026-05-03)**: Stages 0–5 + Stage 6.1 + 5-FU.1..4 + Stage
+7.0..7.5 done. Crypto layer is byte-equal with the Syndace Python
+stack on both backends (twomemo + oldmemo), XEP-0384 v0.9 and v0.3
+stanzas round-trip canonically, SQLite-backed identity / SPK / OPK /
+session persistence is the system of record (schema v3 keys
+sessions by `(jid, device_id, backend)`), OMEMO 2 message bodies
+are wrapped in XEP-0420 SCE envelopes with `<to>`-verification on
+inbound while OMEMO 0.3 uses AES-128-GCM directly on raw body
+bytes, peer devices are tracked under a TOFU/Manual trust policy
+with IK-drift detection, production deployments ship StartTLS via
+`connect_starttls` (rustls + aws-lc-rs + native cert validation),
+two `omemo-pep` instances exchange three OMEMO 2 chat messages
+over a real Prosody (`tests/gate.rs`), three `omemo-pep` instances
+exchange OMEMO 2 group-chat messages over a real Prosody MUC
 (`tests/muc.rs::three_clients_groupchat_omemo2_round_trip`),
-omemo-rs ↔ Syndace's python-omemo cross-implementation interop in
-both directions over OMEMO 2 (Stage 6.1 — `tests/python_interop.rs`),
-and the `omemo-oldmemo` crate is scaffolded clean-room from XEP-0384
-v0.3 + ADR-009 with 10 unit tests green. Stage 6.2 (Conversations +
-Dino manual interop) and Stage 7.2..7.5 (oldmemo fixture pipeline,
-stanza encoder, pep dual-backend, cross-impl gate) are the remaining
-in-repo tracks.
+**omemo-rs ↔ Syndace's python-omemo cross-implementation interop
+passes both directions on both backends** (4 tests in
+`tests/python_interop.rs` — OMEMO 2 from Stage 6.1, OMEMO 0.3 from
+Stage 7.5). `omemo-rs-cli` publishes our identity on *both*
+namespaces simultaneously and dispatches outbound by `--backend`
+flag, inbound by `<encrypted xmlns>` via `wait_for_encrypted_any`.
+Stage 6.2 (Conversations + Dino manual interop) is the only
+remaining in-repo track; everything else is downstream client work
+(Converse.js fork, upstream PR, WASM port).
 
 ## Stage 0 — Workspace + Test-Vector Pipeline ✅
 
@@ -454,12 +458,30 @@ Per-peer auto-selection (which namespace a given peer advertises) and
 simultaneous self-publishing on both namespaces are deferred to the
 CLI integration in Stage 7.5.
 
-### 7.5 — GATE: omemo-rs ↔ python-oldmemo cross-impl ⏳
+### 7.5 — GATE: omemo-rs ↔ python-oldmemo cross-impl ✅
 
-Extend `python_interop.rs` with `--backend oldmemo`; verify both
-directions decrypt the same body bytes through the
-`eu.siacs.conversations.axolotl` namespace.
+`omemo-rs-cli` gains a `--backend [twomemo|oldmemo]` flag on send
+(recv auto-dispatches by inbound namespace via
+`wait_for_encrypted_any`). The CLI's identity-publish step
+publishes on **both** OMEMO 2 and OMEMO 0.3 namespaces
+simultaneously, so a peer running either backend can find us.
+`interop_client.py` gains the matching `--backend` flag (OMEMO 0.3
+rides slixmpp-omemo's native encrypt/decrypt happy path because
+the spec carries body bytes raw, no SCE envelope to bypass).
 
-After Stage 7 passes, the library can talk to any OMEMO 0.3 client and
-is considered v0.1.0 candidate (Stages 8+ — Converse.js fork, OMEMO 2
-upstream PR, WASM port — are downstream client work).
+`python_interop.rs` gains the parallel pair:
+
+* `rust_send_python_recv_via_omemo03`
+* `python_send_rust_recv_via_omemo03`
+
+Both pass on a real Prosody alongside the existing two OMEMO 2
+cases (4 tests green total in 41.7s). One bug surfaced + fixed
+during the gate: the OMEMO 0.3 KEX wire form is
+`0x33 || OMEMOKeyExchange.SerializeToString()` (same `[VERSION_BYTE]`
+prefix that wraps every per-message `OMEMOAuthenticatedMessage`),
+which my initial scaffolding had omitted. `gen_oldmemo.py` and the
+in-process replay fixture were updated to match.
+
+After Stage 7 passes, the library can talk to any OMEMO 0.3 client
+and is considered v0.1.0 candidate (Stages 8+ — Converse.js fork,
+OMEMO 2 upstream PR, WASM port — are downstream client work).
