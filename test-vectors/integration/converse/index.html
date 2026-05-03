@@ -24,8 +24,15 @@
       copied into the omemo-rs repository. See ADR-007 for our
       MPL-2.0 stance.
     -->
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/converse.js@11.0.0/dist/converse.min.css" />
+    <!--
+      All Converse.js assets ride the same-origin `/dist/` path —
+      nginx reverse-proxies it to JSDelivr (see ../prosody/
+      docker-compose.yml + ../converse/nginx.conf). This makes
+      webpack's hard-coded `dist/` publicPath resolve correctly
+      for code-split chunks (emojis.js, omemo.js, language packs)
+      without browser CORS / SRI / WebCrypto-context drama.
+    -->
+    <link rel="stylesheet" href="/dist/converse.min.css" />
     <style>
       body {
         margin: 0;
@@ -62,19 +69,7 @@
       <code>docs/converse-e2e.md</code> for the full workflow.
     </header>
 
-    <!--
-      Pin webpack's runtime public path to the JSDelivr `dist/`
-      directory BEFORE the bundle loads. Without this, code-split
-      chunks (`emojis.js`, language packs, …) try to load from
-      `<page-origin>/dist/...` and 404 — only the entry bundle
-      `converse.min.js` is served by JSDelivr; the chunks live
-      next to it on the same CDN path.
-    -->
-    <script>
-      // eslint-disable-next-line no-unused-vars
-      window.__webpack_public_path__ = "https://cdn.jsdelivr.net/npm/converse.js@11.0.0/dist/";
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/converse.js@11.0.0/dist/converse.min.js"></script>
+    <script src="/dist/converse.min.js"></script>
     <script>
       // BOSH and WebSocket both ride **same-origin reverse proxy**
       // through nginx — `/http-bind/` and `/xmpp-websocket` on
