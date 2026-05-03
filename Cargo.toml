@@ -5,6 +5,7 @@ members = [
     "crates/omemo-doubleratchet",
     "crates/omemo-x3dh",
     "crates/omemo-twomemo",
+    "crates/omemo-oldmemo",
     "crates/omemo-stanza",
     "crates/omemo-session",
     "crates/omemo-pep",

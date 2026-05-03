@@ -1,0 +1,29 @@
+[package]
+name = "omemo-oldmemo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "OMEMO 0.3.0 (oldmemo, eu.siacs.conversations.axolotl) backend: clean-room wire format + 8-byte HMAC truncation. See ADR-009."
+
+[dependencies]
+prost = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true, features = ["alloc"] }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+rand_core = { workspace = true }
+
+omemo-doubleratchet = { path = "../omemo-doubleratchet" }
+omemo-x3dh = { path = "../omemo-x3dh" }
+omemo-xeddsa = { path = "../omemo-xeddsa" }
+
+[dev-dependencies]
+x25519-dalek = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+protoc-bin-vendored = "3"

@@ -1281,6 +1281,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "omemo-oldmemo"
+version = "0.0.1"
+dependencies = [
+ "aes",
+ "cbc",
+ "hkdf",
+ "hmac",
+ "omemo-doubleratchet",
+ "omemo-x3dh",
+ "omemo-xeddsa",
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "rand_core 0.6.4",
+ "sha2",
+ "thiserror 1.0.69",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "omemo-pep"
 version = "0.0.1"
 dependencies = [
