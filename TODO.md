@@ -25,7 +25,7 @@ Ordering reflects dependencies — do top to bottom.
 | 7.1 — `omemo-oldmemo` scaffold | ✅ | `cargo test -p omemo-oldmemo` (10 unit tests) |
 | 7.2 — `gen_oldmemo.py` + replay | ✅ | byte-equal vs python-oldmemo on KEX + 3 messages |
 | 7.3 — `omemo-stanza` axolotl ns | ✅ | round-trip `eu.siacs.conversations.axolotl` stanzas + AES-128-GCM body |
-| 7.4 — `omemo-pep` dual-backend | ⏳ | per-peer backend selection by devicelist namespace |
+| 7.4 — `omemo-pep` dual-backend | ✅ | parallel `*_oldmemo` flows + dual-namespace `wait_for_encrypted_any` |
 | 7.5 — oldmemo cross-impl gate | ⏳ | `python_interop --backend oldmemo` (both directions) |
 
 **Stages 1–5 + 4-FU.1..4 + 5-FU.1..4 + Stage 6.1 + Stage 7.1 complete.**
@@ -601,19 +601,41 @@ oracle (see ADR-009 in `docs/decisions.md`).
       `zeroize`, and a path dep on `omemo-xeddsa` for the
       Curve25519↔Ed25519 conversion. `cargo deny` stays clean.
 
-### 7.4 — `omemo-pep` dual-backend support ⏳
+### 7.4 — `omemo-pep` dual-backend support ✅
 
-- [ ] Per-peer backend selection by which devicelist node the peer
-      publishes (`urn:xmpp:omemo:2:devices` vs
-      `eu.siacs.conversations.axolotl.devicelist`).
-- [ ] Bundle PEP-node naming: split fetch_bundle into per-backend
-      paths (`urn:xmpp:omemo:2:bundles` vs
-      `eu.siacs.conversations.axolotl.bundles:<deviceid>`).
-- [ ] `encrypt_to_peers` dispatches to twomemo or oldmemo per peer
-      device; mixed-backend MUC fan-out works (some recipients on
-      OMEMO 2, others on 0.3).
-- [ ] Self-publish on **both** namespaces by default so peers can
-      pick whichever they support.
+- [x] omemo-session schema v3: `(bare_jid, device_id, backend)` PK
+      on `session` and `message_keys_skipped` so a peer can keep
+      both a twomemo and an oldmemo session row simultaneously.
+- [x] omemo-session `Backend { Twomemo, Oldmemo }` enum + parallel
+      `save_oldmemo_session` / `load_oldmemo_session_snapshot` /
+      `commit_first_inbound_oldmemo` /
+      `receive_initial_message_oldmemo` / `session_backends`.
+- [x] omemo-x3dh `get_shared_secret_active_oldmemo` /
+      `get_shared_secret_passive_oldmemo` — info `WhisperText`,
+      66-byte AssociatedData (`enc(ik_a)(33) || enc(ik_b)(33)`),
+      sign-bit-stuffed SPK signature verifier.
+- [x] omemo-pep::pep — `OLD_DEVICES_NODE` (`eu.siacs.conversations.
+      axolotl.devicelist`), per-device `OLD_BUNDLES_NODE_PREFIX`
+      (`eu.siacs.conversations.axolotl.bundles:<deviceid>`),
+      `publish_old_device_list` / `fetch_old_device_list` /
+      `publish_old_bundle` / `fetch_old_bundle`.
+- [x] omemo-pep::wire — namespace-aware `wait_for_encrypted_any`
+      returning `EncryptedAny { Twomemo | Oldmemo }`;
+      `send_encrypted_old`.
+- [x] omemo-pep::message_old — `KexCarrierOld`, `RecipientOld`,
+      `bootstrap_active_session_oldmemo_from_bundle`,
+      `encrypt_message_oldmemo`, `decrypt_message_oldmemo`,
+      `decrypt_inbound_kex_oldmemo`, `inbound_kind_oldmemo`.
+- [x] omemo-pep::store_old — `old_bundle_from_store`,
+      `bootstrap_and_save_active_oldmemo`, `encrypt_to_peer_oldmemo`,
+      `receive_first_message_oldmemo`, `receive_followup_oldmemo`.
+      End-to-end alice→bob KEX + follow-up round-trip test green
+      through real `omemo-session` SQLite stores.
+- [ ] Per-peer auto-selection (which backend a given peer
+      advertises). Stage 7.5 will drive both backends explicitly
+      via the CLI; auto-selection lands when omemo-rs-cli grows a
+      dedicated subcommand. Self-publishing on *both* namespaces
+      simultaneously is similarly deferred to the CLI integration.
 
 ### 7.5 — GATE: omemo-rs ↔ python-oldmemo cross-impl interop ⏳
 

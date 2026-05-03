@@ -420,13 +420,39 @@ tolerance, sign-bit round-trip, prefix-byte rejection, and tamper
 detection. `cargo deny` stays clean (`aes-gcm` 0.10 is RustCrypto
 MIT/Apache).
 
-### 7.4 — `omemo-pep` dual-backend support ⏳
+### 7.4 — `omemo-pep` dual-backend support ✅
 
-`omemo-pep` selects backend per peer based on the advertised devicelist
-namespace. Bundle PEP node names diverge:
-`eu.siacs.conversations.axolotl.devicelist` /
-`.bundles:<deviceid>` for oldmemo, vs `urn:xmpp:omemo:2:devices` /
-`:bundles` for twomemo. `encrypt_to_peers` gains backend dispatch.
+Storage: `omemo-session` schema v3 puts `backend` (0=Twomemo,
+1=Oldmemo) into the PK of `session` and `message_keys_skipped`, so a
+peer can keep both backends side-by-side. Existing twomemo rows
+migrate as `backend=0`. The `Backend` enum + parallel `*_oldmemo`
+session-I/O functions are exposed by `omemo-session`.
+
+X3DH: `omemo-x3dh` gains `get_shared_secret_active_oldmemo` /
+`get_shared_secret_passive_oldmemo` — same DH steps, OMEMO 0.3 info
+string (`WhisperText`), 66-byte AssociatedData, plus a separate
+`verify_bundle_oldmemo` that verifies the SPK sig over the encoded
+33-byte form (matching python-x3dh's oldmemo path).
+
+PEP: dedicated `OLD_DEVICES_NODE` constant + per-device
+`OLD_BUNDLES_NODE_PREFIX` and the four publish/fetch helpers
+(`publish_old_device_list`, `fetch_old_device_list`,
+`publish_old_bundle`, `fetch_old_bundle`).
+
+Wire: `wait_for_encrypted_any` returns `EncryptedAny { Twomemo |
+Oldmemo }`, dispatching by `<encrypted xmlns>`. `send_encrypted_old`
+sends the OMEMO 0.3 stanza shape.
+
+Flow: parallel `message_old` and `store_old` modules mirror the
+existing OMEMO 2 ones but use `OldmemoSession`, the axolotl stanza
+shape, and AES-128-GCM body encryption (no SCE envelope; OMEMO 0.3
+puts the body bytes directly into the AEAD). End-to-end alice→bob
+KEX + follow-up round-trip test (`alice_to_bob_oldmemo_first_then_followup_through_stores`)
+exercises the full path through real `omemo-session` SQLite stores.
+
+Per-peer auto-selection (which namespace a given peer advertises) and
+simultaneous self-publishing on both namespaces are deferred to the
+CLI integration in Stage 7.5.
 
 ### 7.5 — GATE: omemo-rs ↔ python-oldmemo cross-impl ⏳
 
