@@ -85,6 +85,17 @@ log = {
     { levels = {min = "info"}, to = "console" },
 }
 
+-- TLS cert + key for HTTPS BOSH (port 5281) and StartTLS on the
+-- C2S socket. The same cert is also mounted into the nginx
+-- sibling so the browser sees a single self-signed identity for
+-- both `https://<host>:8766/` (Converse.js page) and the BOSH
+-- HTTPS XHR target. Regenerate via
+-- `test-vectors/integration/tls/gen-cert.sh`.
+ssl = {
+    certificate = "/etc/prosody/tls/cert.pem";
+    key = "/etc/prosody/tls/key.pem";
+}
+
 VirtualHost "localhost"
     enabled = true
 

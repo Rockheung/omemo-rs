@@ -1,0 +1,4 @@
+# Self-signed certs are regenerated per operator (network-specific
+# SAN entries) and never committed.
+cert.pem
+key.pem

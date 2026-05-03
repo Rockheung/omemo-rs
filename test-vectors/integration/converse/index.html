@@ -50,9 +50,11 @@
   <body>
     <header>
       <strong>omemo-rs E2E — Converse.js</strong>
-      &nbsp;|&nbsp; Bring up the stack with
-      <code>docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d</code>,
-      then log in as e.g. <code>e2e_alice@localhost</code> /
+      &nbsp;|&nbsp; Local: <code>http://localhost:8765/</code> &middot;
+      LAN/HTTPS: <code>https://&lt;host&gt;:8766/</code> (accept the
+      self-signed cert + accept a second time at
+      <code>https://&lt;host&gt;:5281/</code> for BOSH).
+      Log in as e.g. <code>e2e_alice@localhost</code> /
       <code>e2ealicepass</code>. Open in another browser profile to
       drive a second session. See
       <code>docs/converse-e2e.md</code> for the full workflow.
@@ -60,23 +62,31 @@
 
     <script src="https://cdn.jsdelivr.net/npm/converse.js@11.0.0/dist/converse.min.js"></script>
     <script>
-      // Derive the BOSH / WebSocket host from `window.location` so
-      // the same page works whether the user opened it as
-      // http://localhost:8765/ on the server, or as
-      // http://<lan-ip>:8765/ from another device on the same LAN.
-      // Prosody's BOSH is on the same hostname as nginx, port 5280.
+      // Pick BOSH / WebSocket scheme + port based on how this page
+      // was loaded:
       //
-      // Plain HTTP — Prosody is configured with
-      // `consider_bosh_secure = true` so SASL PLAIN is allowed even
-      // though the underlying transport is unencrypted. The compose
-      // file binds these ports on 0.0.0.0 by default; this is a
-      // dev / LAN fixture, not a public deployment. For production
-      // use, front Prosody's port 5281 with a real cert and switch
-      // these URLs to https/wss.
+      //   page http://...:8765/   →  http://...:5280/http-bind/   + ws://
+      //   page https://...:8766/  →  https://...:5281/http-bind/  + wss://
+      //
+      // The HTTPS path is required when the page is opened from a
+      // non-localhost origin (LAN IP, mDNS hostname): browsers only
+      // expose `crypto.subtle` to **secure contexts**, and OMEMO +
+      // SCRAM-SHA-1 both fail without it. Self-signed cert; accept
+      // the warning at the page URL AND once at
+      // https://<host>:5281/ (browsers treat each origin
+      // separately).
       var host = window.location.hostname || "localhost";
+      var bosh_url, ws_url;
+      if (window.location.protocol === "https:") {
+        bosh_url = "https://" + host + ":5281/http-bind/";
+        ws_url   = "wss://"   + host + ":5281/xmpp-websocket";
+      } else {
+        bosh_url = "http://" + host + ":5280/http-bind/";
+        ws_url   = "ws://"   + host + ":5280/xmpp-websocket";
+      }
       converse.initialize({
-        bosh_service_url: "http://" + host + ":5280/http-bind/",
-        websocket_url: "ws://" + host + ":5280/xmpp-websocket",
+        bosh_service_url: bosh_url,
+        websocket_url: ws_url,
         // Auto-discovery would also work via XEP-0156 host-meta,
         // but pinning the URL keeps the dev fixture deterministic.
         authentication: "login",
