@@ -265,3 +265,185 @@ fn python_send_rust_recv_via_omemo2() {
         "rust recv stdout doesn't show python sender JID. stdout:\n{stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Stage 7.5 — OMEMO 0.3 (eu.siacs.conversations.axolotl) cross-impl
+// ---------------------------------------------------------------------------
+//
+// Mirror of the OMEMO 2 pair above, with `--backend oldmemo` on both
+// sides. We reuse the `pyint_a` / `pyint_b` Prosody accounts — each
+// test uses its own `tempdir` so neither side carries persistent
+// state across runs, and OMEMO 0.3 PEP nodes are a different
+// namespace (`eu.siacs.conversations.axolotl.{devicelist,bundles:N}`)
+// from the OMEMO 2 ones, so the two test families don't share PEP
+// data either.
+
+#[test]
+#[ignore = "Stage 7.5 cross-impl interop; requires Prosody + python-interop venv"]
+fn rust_send_python_recv_via_omemo03() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store_dir = dir.path();
+    let py_data_dir = store_dir.join("python");
+    std::fs::create_dir_all(&py_data_dir).unwrap();
+
+    let init = rust_cli(store_dir, "pyint_a@localhost", "pyintapass")
+        .args(["init", "--device-id", "1003", "--opk-count", "10"])
+        .output()
+        .expect("init rust");
+    assert!(
+        init.status.success(),
+        "init: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let py_log = store_dir.join("py-recv-old.log");
+    let py_log_file = std::fs::File::create(&py_log).unwrap();
+    let mut py_proc = py(&py_data_dir, "pyint_b@localhost", "pyintbpass")
+        .args(["--backend", "oldmemo", "recv"])
+        .stdout(py_log_file.try_clone().unwrap())
+        .stderr(py_log_file)
+        .spawn()
+        .expect("spawn python recv");
+
+    let log = poll_log_for(
+        &py_log,
+        |s| s.contains("\nREADY ") || s.starts_with("READY "),
+        30,
+    );
+    let py_dev: u32 = log
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("READY ")
+                .map(str::trim)
+                .and_then(|n| n.parse().ok())
+        })
+        .expect("READY <device_id> line");
+
+    let body = "hello python from rust (oldmemo interop)";
+    let send = rust_cli(store_dir, "pyint_a@localhost", "pyintapass")
+        .args([
+            "send",
+            "--backend",
+            "oldmemo",
+            "--peer",
+            "pyint_b@localhost",
+            "--peer-device",
+            &py_dev.to_string(),
+            "--body",
+            body,
+        ])
+        .output()
+        .expect("rust send");
+    assert!(
+        send.status.success(),
+        "rust send failed: {}\nstderr: {}",
+        String::from_utf8_lossy(&send.stdout),
+        String::from_utf8_lossy(&send.stderr),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = py_proc.try_wait().unwrap() {
+            assert!(
+                status.success(),
+                "python recv exited non-zero: {status:?}\nlog:\n{}",
+                std::fs::read_to_string(&py_log).unwrap_or_default()
+            );
+            break;
+        }
+        if Instant::now() > deadline {
+            let _ = py_proc.kill();
+            panic!(
+                "python recv didn't exit within 30s; log:\n{}",
+                std::fs::read_to_string(&py_log).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let stdout = std::fs::read_to_string(&py_log).unwrap_or_default();
+    assert!(
+        stdout.contains(body),
+        "python stdout doesn't contain body.\nbody: {body}\nstdout:\n{stdout}"
+    );
+}
+
+#[test]
+#[ignore = "Stage 7.5 cross-impl interop; requires Prosody + python-interop venv"]
+fn python_send_rust_recv_via_omemo03() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store_dir = dir.path();
+    let py_data_dir = store_dir.join("python");
+    std::fs::create_dir_all(&py_data_dir).unwrap();
+
+    let init = rust_cli(store_dir, "pyint_b@localhost", "pyintbpass")
+        .args(["init", "--device-id", "2003", "--opk-count", "10"])
+        .output()
+        .expect("init rust");
+    assert!(
+        init.status.success(),
+        "init: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let rust_log = store_dir.join("rust-recv-old.log");
+    let rust_log_file = std::fs::File::create(&rust_log).unwrap();
+    let mut rust_proc = rust_cli(store_dir, "pyint_b@localhost", "pyintbpass")
+        .args(["recv", "--timeout", "60"])
+        .stdout(rust_log_file.try_clone().unwrap())
+        .stderr(rust_log_file)
+        .spawn()
+        .expect("spawn rust recv");
+
+    std::thread::sleep(Duration::from_secs(6));
+
+    let body = "hello rust from python (oldmemo interop)";
+    let send = py(&py_data_dir, "pyint_a@localhost", "pyintapass")
+        .args([
+            "--backend",
+            "oldmemo",
+            "send",
+            "--peer",
+            "pyint_b@localhost",
+            "--body",
+            body,
+        ])
+        .output()
+        .expect("python send");
+    assert!(
+        send.status.success(),
+        "python send failed: {}\nstderr: {}",
+        String::from_utf8_lossy(&send.stdout),
+        String::from_utf8_lossy(&send.stderr),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = rust_proc.try_wait().unwrap() {
+            assert!(
+                status.success(),
+                "rust recv exited non-zero: {status:?}\nlog:\n{}",
+                std::fs::read_to_string(&rust_log).unwrap_or_default()
+            );
+            break;
+        }
+        if Instant::now() > deadline {
+            let _ = rust_proc.kill();
+            panic!(
+                "rust recv didn't exit within 60s; log:\n{}",
+                std::fs::read_to_string(&rust_log).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let stdout = std::fs::read_to_string(&rust_log).unwrap_or_default();
+    assert!(
+        stdout.contains(body),
+        "rust recv stdout doesn't contain body.\nbody: {body}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("pyint_a@localhost/"),
+        "rust recv stdout doesn't show python sender JID. stdout:\n{stdout}"
+    );
+}

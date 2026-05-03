@@ -173,12 +173,14 @@ class InteropClient(ClientXMPP):
         peer: Optional[str],
         body: Optional[str],
         deadline_secs: int,
+        backend: str = "twomemo",
     ) -> None:
         super().__init__(jid, password)
         self.mode = mode
         self.peer = peer
         self.body = body
         self.deadline_secs = deadline_secs
+        self.backend = backend  # "twomemo" or "oldmemo"
         # Drives the single end-of-test event.
         self.done: asyncio.Event = asyncio.Event()
         # `recv` mode populates this with the recovered body so the
@@ -219,14 +221,18 @@ class InteropClient(ClientXMPP):
             await self._send_once()
 
     async def _send_once(self) -> None:
-        """Send one OMEMO 2 (twomemo) chat body wrapped in an XEP-0420
-        SCE envelope. Bypasses `xep_0384.encrypt_message` because
-        slixmpp-omemo 2.1.0 doesn't implement SCE on the encrypt
-        side (it skips the `urn:xmpp:omemo:2` namespace entirely and
-        only emits oldmemo) — see the plugin source comment, which
-        ends with `... IF I HAD ONE!!!`. We build the envelope here
-        and call `SessionManager.encrypt` with the envelope bytes
-        directly."""
+        """Send one chat body in the configured backend.
+
+        * `twomemo` (OMEMO 2) wraps the body in an XEP-0420 SCE
+          envelope and bypasses `xep_0384.encrypt_message` because
+          slixmpp-omemo 2.1.0's SCE encrypt path is unimplemented
+          (it short-circuits on `urn:xmpp:omemo:2` — see the plugin
+          source comment that ends `... IF I HAD ONE!!!`). We call
+          `SessionManager.encrypt` directly with the envelope bytes.
+        * `oldmemo` (OMEMO 0.3) uses raw body bytes (no SCE) — the
+          path slixmpp-omemo natively supports — and lets the
+          plugin's normal `encrypt_message` flow run.
+        """
 
         import base64
         import os
@@ -235,6 +241,8 @@ class InteropClient(ClientXMPP):
 
         import twomemo
         import twomemo.etree
+        import oldmemo
+        import oldmemo.etree
 
         # NOTE: Don't `ET_std.register_namespace("", twomemo_ns)` —
         # ET applies that registration globally, and slixmpp will
@@ -248,36 +256,44 @@ class InteropClient(ClientXMPP):
         assert self.peer is not None and self.body is not None
         xep_0384: XEP_0384 = self["xep_0384"]
 
-        # Build an XEP-0420 SCE envelope around `<body>`. omemo-rs
-        # verifies `<to>` strictly (XEP-0384 §4.5), so it has to be
-        # the recipient's bare JID. `<rpad>` is base64'd random
-        # bytes per XEP-0420 §3.2.
-        rpad = base64.b64encode(os.urandom(16)).decode()
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        body_escaped = (
-            self.body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        )
-        envelope = (
-            '<envelope xmlns="urn:xmpp:sce:1">'
-            f'<content><body xmlns="jabber:client">{body_escaped}</body></content>'
-            f"<rpad>{rpad}</rpad>"
-            f'<time stamp="{ts}"/>'
-            f'<to jid="{self.peer}"/>'
-            f'<from jid="{self.boundjid.bare}"/>'
-            "</envelope>"
-        ).encode("utf-8")
-
-        # Make sure the peer's bundle is in cache (slixmpp-omemo
-        # otherwise lazy-loads on first send).
         await xep_0384.refresh_device_lists({JID(self.peer)})
-
         sm = await xep_0384.get_session_manager()
-        omemo_messages, errs = await sm.encrypt(
-            frozenset({self.peer}),
-            {twomemo.twomemo.NAMESPACE: envelope},
-            backend_priority_order=[twomemo.twomemo.NAMESPACE],
-            identifier=None,
-        )
+
+        if self.backend == "oldmemo":
+            # OMEMO 0.3: raw body bytes, no SCE envelope. omemo-rs's
+            # receive_followup_oldmemo / receive_first_message_oldmemo
+            # consume the body bytes directly.
+            plaintext = self.body.encode("utf-8")
+            namespace = oldmemo.oldmemo.NAMESPACE
+            omemo_messages, errs = await sm.encrypt(
+                frozenset({self.peer}),
+                {namespace: plaintext},
+                backend_priority_order=[namespace],
+                identifier=None,
+            )
+        else:
+            # OMEMO 2 path — wrap in XEP-0420 SCE envelope.
+            rpad = base64.b64encode(os.urandom(16)).decode()
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            body_escaped = (
+                self.body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+            envelope = (
+                '<envelope xmlns="urn:xmpp:sce:1">'
+                f'<content><body xmlns="jabber:client">{body_escaped}</body></content>'
+                f"<rpad>{rpad}</rpad>"
+                f'<time stamp="{ts}"/>'
+                f'<to jid="{self.peer}"/>'
+                f'<from jid="{self.boundjid.bare}"/>'
+                "</envelope>"
+            ).encode("utf-8")
+            namespace = twomemo.twomemo.NAMESPACE
+            omemo_messages, errs = await sm.encrypt(
+                frozenset({self.peer}),
+                {namespace: envelope},
+                backend_priority_order=[namespace],
+                identifier=None,
+            )
         if errs:
             log.warning("non-critical encrypt errors: %s", errs)
         if not omemo_messages:
@@ -287,18 +303,24 @@ class InteropClient(ClientXMPP):
 
         sent = 0
         for omemo_msg in omemo_messages.keys():
-            if omemo_msg.namespace != twomemo.twomemo.NAMESPACE:
+            if omemo_msg.namespace != namespace:
                 continue
-            et_elt = twomemo.etree.serialize_message(omemo_msg)
+            if self.backend == "oldmemo":
+                et_elt = oldmemo.etree.serialize_message(omemo_msg)
+            else:
+                et_elt = twomemo.etree.serialize_message(omemo_msg)
             msg = self.make_message(mto=JID(self.peer), mtype="chat")
             msg.xml.append(et_elt)
             msg.send()
             sent += 1
-        log.info("Sent %d byte body to %s in %d twomemo message(s)", len(self.body), self.peer, sent)
-        # Let the wire flush before main() disconnects. slixmpp's
-        # `send()` is async-fire-and-forget — without this the
-        # disconnect can race the outgoing TCP write and the message
-        # never reaches the peer.
+        log.info(
+            "Sent %d byte body to %s in %d %s message(s)",
+            len(self.body),
+            self.peer,
+            sent,
+            self.backend,
+        )
+        # Let the wire flush before main() disconnects.
         await asyncio.sleep(2)
         self.done.set()
 
@@ -322,7 +344,9 @@ class InteropClient(ClientXMPP):
             # the twomemo (urn:xmpp:omemo:2) namespace yet. The
             # plaintext bytes are leaked through the exception
             # message; we parse them ourselves so the cross-impl
-            # round-trip can complete.
+            # round-trip can complete. (For OMEMO 0.3 there is no
+            # SCE envelope, so this NotImplementedError path doesn't
+            # fire — the regular decrypt branch above succeeds.)
             unwrapped = unwrap_sce_envelope_from_error(str(e))
             if unwrapped is not None:
                 body = unwrapped
@@ -350,6 +374,7 @@ def build_client(args: argparse.Namespace) -> InteropClient:
         peer=getattr(args, "peer", None),
         body=getattr(args, "body", None),
         deadline_secs=args.timeout,
+        backend=getattr(args, "backend", "twomemo"),
     )
     # Plaintext localhost only — match omemo-rs-cli's --insecure-tcp.
     # Slixmpp picks this up from the `address` keyword on connect.
@@ -431,6 +456,12 @@ def main() -> None:
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="enable INFO logging"
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["twomemo", "oldmemo"],
+        default="twomemo",
+        help="OMEMO wire-format backend (default: twomemo / OMEMO 2)",
     )
 
     sub = parser.add_subparsers(dest="mode", required=True)
