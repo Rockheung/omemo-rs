@@ -1,12 +1,33 @@
-# Localhost Prosody for omemo-rs integration tests.
+# Localhost integration stack for omemo-rs.
 #
-# Start:  docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
-# Status: docker compose -f .../docker-compose.yml ps
-# Logs:   docker compose -f .../docker-compose.yml logs -f prosody
-# Stop:   docker compose -f .../docker-compose.yml down -v
+# Two services:
 #
-# Two pre-registered accounts:  alice@localhost / alicepass
-#                               bob@localhost   / bobpass
+# * `prosody`  — Prosody 13.x XMPP server. Exposes 5222 (C2S TCP)
+#   plus 5280 (HTTP BOSH + WebSocket) for browser-based clients.
+#   Loopback-only (127.0.0.1).
+# * `converse` — nginx serving the Converse.js E2E fixture from
+#   `../converse/index.html`. Loopback-only on
+#   http://127.0.0.1:8765. See `docs/converse-e2e.md` for the manual
+#   multi-session workflow. Port 8765 was chosen to avoid the
+#   contested 8080 (Vite, llama-swap, etc.).
+#
+# Common commands:
+#   docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d
+#   docker compose -f .../docker-compose.yml ps
+#   docker compose -f .../docker-compose.yml logs -f prosody
+#   docker compose -f .../docker-compose.yml down -v
+#
+# Pre-registered accounts (one set per use case):
+#   alice / bob / charlie         — early Stage 4 connect+PEP tests
+#   gate_a / gate_b               — Stage 4 1:1 gate
+#   muc_a..muc_g                  — Stage 5 MUC integration
+#   cli_a / cli_b                 — omemo-rs-cli binary spawn
+#   pyint_a / pyint_b             — Stage 6+7 cross-impl interop
+#   e2e_alice / e2e_bob / e2e_carol / e2e_dave
+#                                 — Stage 8 manual multi-session E2E
+#   (passwords: `<account>pass` for the simple ones,
+#               `e2e<name>pass` for the e2e_* ones — see
+#               `Dockerfile` ENTRYPOINT for the full table.)
 
 services:
   prosody:
@@ -17,6 +38,8 @@ services:
     container_name: omemo-rs-prosody
     ports:
       - "127.0.0.1:5222:5222"
+      - "127.0.0.1:5280:5280"
+      - "127.0.0.1:5281:5281"
     volumes:
       - prosody-data:/var/lib/prosody
     healthcheck:
@@ -24,6 +47,23 @@ services:
       interval: 3s
       timeout: 5s
       retries: 20
+
+  converse:
+    image: nginx:1-alpine
+    container_name: omemo-rs-converse
+    depends_on:
+      prosody:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8765:80"
+    volumes:
+      - ../converse/index.html:/usr/share/nginx/html/index.html:ro
+      - ../converse/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 volumes:
   prosody-data:

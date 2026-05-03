@@ -21,7 +21,7 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-EXPOSE 5222
+EXPOSE 5222 5280 5281
 
 COPY prosody.cfg.lua /etc/prosody/prosody.cfg.lua
 
@@ -47,6 +47,9 @@ WORKDIR /var/lib/prosody
 #   muc_e / muc_f / muc_g — Stage 5.5 group-OMEMO gate (3-client)
 #   cli_a / cli_b   — `omemo-rs-cli/tests/cli.rs` (5-FU.4 binary spawn)
 #   pyint_a / pyint_b — `tests/python_interop.rs` (Stage 6: omemo-rs ↔ python-omemo cross-impl)
+#   e2e_alice / e2e_bob / e2e_carol / e2e_dave — Stage 8 manual
+#         multi-session E2E with Converse.js + omemo-rs-cli; see
+#         `docs/converse-e2e.md`.
 ENTRYPOINT ["sh", "-c", "\
     prosodyctl register alice localhost alicepass || true; \
     prosodyctl register bob localhost bobpass || true; \
@@ -64,4 +67,8 @@ ENTRYPOINT ["sh", "-c", "\
     prosodyctl register cli_b localhost clibpass || true; \
     prosodyctl register pyint_a localhost pyintapass || true; \
     prosodyctl register pyint_b localhost pyintbpass || true; \
+    prosodyctl register e2e_alice localhost e2ealicepass || true; \
+    prosodyctl register e2e_bob localhost e2ebobpass || true; \
+    prosodyctl register e2e_carol localhost e2ecarolpass || true; \
+    prosodyctl register e2e_dave localhost e2edavepass || true; \
     exec prosody"]

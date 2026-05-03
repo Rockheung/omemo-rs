@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>omemo-rs E2E — Converse.js</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <!--
+      Converse.js loaded from the official JSDelivr CDN. The
+      version is pinned to a known-good release rather than
+      `@latest` so this fixture stays reproducible across rebuilds.
+
+      Why CDN instead of npm + bundler?  This fixture is purely a
+      manual / browser-driven E2E rig — no Node toolchain, no
+      build step. The omemo-rs project consumes Converse.js as a
+      *peer client* (we test against it), not as a library, so the
+      simplest possible static asset is appropriate. If we later
+      vendor it (e.g. for fully offline CI), the same `<script>`
+      tag plus a downloaded bundle would work unchanged.
+
+      License note: Converse.js is MPL-2.0 (file-scoped weak
+      copyleft). This page links to it dynamically over the
+      network at test time; nothing from Converse.js source is
+      copied into the omemo-rs repository. See ADR-007 for our
+      MPL-2.0 stance.
+    -->
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/converse.js@11.0.0/dist/converse.min.css" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: #f4f5f7;
+      }
+      header {
+        background: #2c3e50;
+        color: white;
+        padding: 8px 14px;
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      header code {
+        background: rgba(255, 255, 255, 0.15);
+        padding: 1px 5px;
+        border-radius: 3px;
+      }
+      header a { color: #9bd2ff; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>omemo-rs E2E — Converse.js</strong>
+      &nbsp;|&nbsp; Bring up the stack with
+      <code>docker compose -f test-vectors/integration/prosody/docker-compose.yml up -d</code>,
+      then log in as e.g. <code>e2e_alice@localhost</code> /
+      <code>e2ealicepass</code>. Open in another browser profile to
+      drive a second session. See
+      <code>docs/converse-e2e.md</code> for the full workflow.
+    </header>
+
+    <script src="https://cdn.jsdelivr.net/npm/converse.js@11.0.0/dist/converse.min.js"></script>
+    <script>
+      // Connect over BOSH (XEP-0124/0206). Plain HTTP — Prosody is
+      // configured with `consider_bosh_secure = true` so SASL PLAIN
+      // is allowed even though the underlying transport is HTTP. OK
+      // because the host port is bound to 127.0.0.1 only.
+      converse.initialize({
+        bosh_service_url: "http://localhost:5280/http-bind/",
+        websocket_url: "ws://localhost:5280/xmpp-websocket",
+        // Auto-discovery would also work via XEP-0156 host-meta,
+        // but pinning the URL keeps the dev fixture deterministic.
+        authentication: "login",
+        auto_login: false,
+        auto_register_muc_nickname: true,
+        view_mode: "fullscreen",
+        // OMEMO 0.3 (eu.siacs.conversations.axolotl) — Converse.js
+        // 11.x doesn't speak OMEMO 2 yet; this is what omemo-rs's
+        // Stage 7 work targets specifically. The plugin is loaded
+        // via `whitelisted_plugins` so it shows up in the UI.
+        whitelisted_plugins: ["converse-omemo"],
+        // Bypass Converse.js's "click to allow" gate on every send.
+        // For an E2E rig where we *want* to verify encryption is
+        // actually happening, leaving the prompt on is more
+        // educational; but it gets old fast across sessions.
+        omemo_default: true,
+        // Trust on first use, mirroring our omemo-rs `TrustPolicy::Tofu`.
+        trusted_plugins: [],
+        // Surfacing the JID input clearly speeds up multi-session
+        // testing (otherwise it autocompletes from localStorage).
+        show_client_info_messages: false,
+        // Localhost-only — disable third-party calls.
+        allow_non_roster_messaging: true,
+        message_archiving: "always",
+        muc_show_join_leave: true,
+      });
+    </script>
+  </body>
+</html>

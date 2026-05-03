@@ -25,6 +25,19 @@ modules_enabled = {
     -- tries to read it. The full `pep` module supports
     -- publish-options correctly.
     "pep",
+    -- HTTP-binding modules so a browser-based client (Converse.js)
+    -- can attach over BOSH (XEP-0124/0206) or WebSocket
+    -- (RFC 7395). The `bosh` module backs `/http-bind/`, and
+    -- `websocket` backs `/xmpp-websocket/`. Required for the
+    -- multi-session E2E test setup under
+    -- `test-vectors/integration/converse/`.
+    "bosh", "websocket",
+    -- Message Archive Management — production XMPP clients (incl.
+    -- Converse.js) expect history to be retrievable across logins.
+    "mam",
+    -- HTTP file upload (XEP-0363) — Converse.js advertises it; the
+    -- module is built-in to recent Prosody.
+    "http_file_share",
 }
 
 modules_disabled = {
@@ -41,6 +54,32 @@ authentication = "internal_hashed"
 storage = "internal"
 
 pidfile = "/var/run/prosody/prosody.pid"
+
+-- HTTP / BOSH / WebSocket for the Converse.js E2E setup
+-- (`test-vectors/integration/converse/`). All HTTP services bind to
+-- 0.0.0.0 inside the container; docker-compose.yml maps to
+-- 127.0.0.1 on the host so it stays local-only.
+http_interfaces = { "*" }
+http_ports = { 5280 }
+https_ports = { 5281 }
+-- BOSH defaults to refusing SASL PLAIN unless the connection is
+-- encrypted. For the localhost dev setup we attach over plain HTTP
+-- (avoids the self-signed cert warning), so flip the flag.
+consider_bosh_secure = true
+consider_websocket_secure = true
+-- Cross-origin allow-list. Converse.js is served from
+-- http://localhost:8080 by the sibling nginx container; without
+-- CORS the browser blocks the BOSH XHR.
+http_cors_override = {
+    bosh = {
+        enabled = true;
+        credentials = true;
+    };
+    websocket = {
+        enabled = true;
+        credentials = true;
+    };
+}
 
 log = {
     { levels = {min = "info"}, to = "console" },
