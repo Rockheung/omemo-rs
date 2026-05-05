@@ -49,14 +49,15 @@ use futures_util::StreamExt;
 use omemo_doubleratchet::dh_ratchet::DhPrivProvider;
 use omemo_pep::{
     bootstrap_and_save_active, bootstrap_and_save_active_oldmemo, encrypt_to_peer,
-    encrypt_to_peer_oldmemo, fetch_bundle, fetch_device_list, fetch_old_bundle,
+    encrypt_to_peer_oldmemo, encrypt_to_peers, fetch_bundle, fetch_device_list, fetch_old_bundle,
     fetch_old_device_list, inbound_kind, inbound_kind_oldmemo, install_identity_random,
     parse_encrypted_message, publish_device_list, publish_my_bundle, publish_old_bundle,
     publish_old_device_list, receive_first_message, receive_first_message_oldmemo,
     receive_followup, receive_followup_oldmemo, replenish_opks, send_encrypted,
     send_encrypted_old, BareJid, Client, Device, DeviceList, EncryptedAny, Event as XmppEvent,
-    InboundKind, InboundOldKind, OldDeviceList, Stanza, Store, TrustPolicy,
+    InboundKind, InboundOldKind, MucRoom, OldDeviceList, PeerSpec, Stanza, Store, TrustPolicy,
 };
+use std::collections::HashMap;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -96,6 +97,43 @@ pub enum Command {
         #[serde(default)]
         id: Option<String>,
     },
+    /// Join a MUC room as `nick`. The daemon sends presence,
+    /// fetches each occupant's OMEMO devicelist (so subsequent
+    /// `send_muc` knows which devices to encrypt for), and emits
+    /// `muc_joined` with the resolved occupant→devices map.
+    /// Currently OMEMO 2 only — Converse.js compatibility for
+    /// OMEMO 0.3 MUC fan-out is on the v3 list.
+    JoinMuc {
+        /// `room@conference.localhost`-style bare JID of the room.
+        room: String,
+        /// Our nickname inside the room.
+        nick: String,
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Send an OMEMO-encrypted groupchat message to a previously
+    /// `join_muc`-ed room. Encrypts once and fans out per device
+    /// across every occupant's known devicelist.
+    SendMuc {
+        room: String,
+        body: String,
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Re-fetch every occupant's devicelist for a room (e.g. after
+    /// you've seen new occupants join). The MVP `join_muc` only
+    /// snapshots once at join time.
+    RefreshMuc {
+        room: String,
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Leave a MUC room.
+    LeaveMuc {
+        room: String,
+        #[serde(default)]
+        id: Option<String>,
+    },
     /// Discover a peer's device list. Emits `device_list` event
     /// listing every device id the peer currently advertises on
     /// PEP. Useful for the orchestrator to know which devices to
@@ -129,6 +167,20 @@ pub enum BackendArg {
     Oldmemo,
 }
 
+/// One occupant + their OMEMO 2 devicelist as known to the daemon
+/// at this point in time. Embedded in `muc_joined` /
+/// `muc_refreshed` events.
+#[derive(Debug, Clone, Serialize)]
+pub struct MucOccupantInfo {
+    /// Real bare JID (NOT the in-room nickname) — required for
+    /// OMEMO since encryption keys are bound to the user's identity.
+    pub real_jid: String,
+    /// In-room nickname.
+    pub nick: String,
+    /// OMEMO 2 device ids advertised on the occupant's PEP node.
+    pub devices: Vec<u32>,
+}
+
 /// Outbound JSON event emitted on stdout.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -160,6 +212,49 @@ pub enum Event {
         /// envelope wrapping).
         #[serde(skip_serializing_if = "String::is_empty")]
         timestamp: String,
+    },
+    /// `join_muc` succeeded. `occupants` is the resolved
+    /// `(real_jid, device_id)` list the daemon will encrypt to
+    /// on subsequent `send_muc` (modulo new joins reflected via
+    /// `muc_occupant_joined`).
+    MucJoined {
+        room: String,
+        occupants: Vec<MucOccupantInfo>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// A new occupant entered the room. The daemon has refreshed
+    /// their devicelist (best-effort) and will include them on
+    /// subsequent `send_muc`.
+    MucOccupantJoined {
+        room: String,
+        nick: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        real_jid: Option<String>,
+    },
+    /// An occupant left the room.
+    MucOccupantLeft { room: String, nick: String },
+    /// An OMEMO-encrypted groupchat message was decrypted.
+    MucMessage {
+        room: String,
+        from_real_jid: String,
+        from_nick: String,
+        device: u32,
+        backend: BackendArg,
+        body: String,
+    },
+    /// `leave_muc` completed.
+    MucLeft {
+        room: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// `refresh_muc` completed.
+    MucRefreshed {
+        room: String,
+        occupants: Vec<MucOccupantInfo>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     /// Result of a `discover` command.
     DeviceList {
@@ -244,7 +339,18 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(64);
     tokio::spawn(stdin_reader(cmd_tx));
 
-    let exit_reason = main_loop(&cfg.bare_jid, &mut client, &mut store, device_id, cmd_rx).await;
+    let mut rooms: HashMap<BareJid, MucRoom> = HashMap::new();
+    let mut occupants_cache: HashMap<BareJid, Vec<(BareJid, Vec<u32>)>> = HashMap::new();
+    let exit_reason = main_loop(
+        &cfg.bare_jid,
+        &mut client,
+        &mut store,
+        device_id,
+        cmd_rx,
+        &mut rooms,
+        &mut occupants_cache,
+    )
+    .await;
 
     // Try to close cleanly. send_end is best-effort.
     let _ = client.send_end().await;
@@ -282,19 +388,22 @@ enum ExitReason {
 // Main event loop
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn main_loop(
     own_jid: &BareJid,
     client: &mut Client,
     store: &mut Store,
     own_device_id: u32,
     mut cmd_rx: mpsc::Receiver<Command>,
+    rooms: &mut HashMap<BareJid, MucRoom>,
+    occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
 ) -> ExitReason {
     loop {
         tokio::select! {
             cmd = cmd_rx.recv() => match cmd {
                 Some(Command::Shutdown) => return ExitReason::Shutdown,
                 Some(cmd) => {
-                    if let Err(e) = handle_command(own_jid, client, store, own_device_id, cmd).await {
+                    if let Err(e) = handle_command(own_jid, client, store, own_device_id, rooms, occupants_cache, cmd).await {
                         let _ = emit(&Event::Error {
                             kind: "command".into(),
                             detail: e.to_string(),
@@ -305,6 +414,9 @@ async fn main_loop(
                 None => return ExitReason::StdinClosed,
             },
             event = client.next() => match event {
+                Some(XmppEvent::Stanza(Stanza::Presence(presence))) => {
+                    handle_presence(rooms, &presence).await;
+                }
                 Some(XmppEvent::Stanza(Stanza::Message(msg))) => {
                     // Inspect the *already-popped* `<message>` for an
                     // `<encrypted>` payload (OMEMO 2 or 0.3). If it
@@ -312,6 +424,7 @@ async fn main_loop(
                     // wait_for_encrypted_any here — that would loop
                     // back into client.next() and miss the message
                     // we just took off the queue.
+                    let is_groupchat = matches!(msg.type_, xmpp_parsers::message::MessageType::Groupchat);
                     let parsed = match parse_encrypted_message(&msg) {
                         Ok(p) => p,
                         Err(e) => {
@@ -324,7 +437,12 @@ async fn main_loop(
                         }
                     };
                     let Some((sender_opt, encrypted_any)) = parsed else { continue };
-                    if let Err(e) = handle_inbound(own_jid, client, store, own_device_id, sender_opt, encrypted_any).await {
+                    let result = if is_groupchat {
+                        handle_inbound_muc(own_jid, client, store, own_device_id, rooms, &msg, sender_opt.as_ref(), encrypted_any).await
+                    } else {
+                        handle_inbound(own_jid, client, store, own_device_id, sender_opt, encrypted_any).await
+                    };
+                    if let Err(e) = result {
                         let _ = emit(&Event::Error {
                             kind: "inbound".into(),
                             detail: e.to_string(),
@@ -441,11 +559,14 @@ async fn handle_inbound(
 // Command dispatch
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_command(
     own_jid: &BareJid,
     client: &mut Client,
     store: &mut Store,
     own_device_id: u32,
+    rooms: &mut HashMap<BareJid, MucRoom>,
+    occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
     cmd: Command,
 ) -> Result<()> {
     match cmd {
@@ -491,6 +612,175 @@ async fn handle_command(
             })
             .await?;
         }
+        Command::JoinMuc { room, nick, id } => {
+            // MVP architecture decision: `join_muc` only sends the
+            // presence. It does NOT block to fetch occupant
+            // devicelists — the daemon's command handler runs
+            // inside `tokio::select!`, so any code that awaits
+            // here (sleep, IQ fetch, etc.) prevents the inbound
+            // arm from dispatching the presence stanzas the
+            // server is sending us right now. Without those
+            // dispatches the room state stays empty and the
+            // refresh sees nobody.
+            //
+            // Instead, the daemon emits `muc_joined` immediately
+            // with an empty occupant list, then streams
+            // `muc_occupant_joined` events as presences arrive.
+            // The orchestrator decides when the room is "settled"
+            // (typical: after seeing every expected nick or after
+            // a small idle period) and issues `refresh_muc` to
+            // snapshot the OMEMO devicelists in one shot. Splitting
+            // these phases keeps the daemon cooperative.
+            let room_jid = BareJid::from_str_strict(&room)?;
+            let muc = MucRoom::new(room_jid.clone(), nick.clone());
+            muc.send_join(client)
+                .await
+                .map_err(|e| anyhow!("send_join: {e}"))?;
+            rooms.insert(room_jid.clone(), muc);
+            occupants_cache.insert(room_jid, Vec::new());
+            emit(&Event::MucJoined {
+                room,
+                occupants: Vec::new(),
+                id,
+            })
+            .await?;
+        }
+        Command::SendMuc { room, body, id } => {
+            let room_jid = BareJid::from_str_strict(&room)?;
+            let muc = rooms
+                .get(&room_jid)
+                .ok_or_else(|| anyhow!("not in MUC {room} (run join_muc first)"))?;
+            let occupant_devs = occupants_cache
+                .get(&room_jid)
+                .ok_or_else(|| anyhow!("no devicelist cache for {room} (run refresh_muc)"))?
+                .clone();
+            // Refuse to fan out to zero recipients — the resulting
+            // `<encrypted>` would be a no-op for everyone (no
+            // <key> children) but ejabberd still routes it,
+            // making peers see a malformed message. Better to
+            // surface the misconfig.
+            if occupant_devs.iter().all(|(_, devs)| devs.is_empty()) {
+                return Err(anyhow!(
+                    "send_muc: no occupant devicelists cached for {room} — \
+                     issue `refresh_muc` after seeing `muc_occupant_joined` events"
+                ));
+            }
+
+            // For each (peer, device): bootstrap if needed and
+            // collect the resulting KexCarrier so the first send
+            // to a brand-new device emits `<key kex='true'>`.
+            // This MVP path is OMEMO 2 only — OMEMO 0.3 MUC
+            // fan-out (Converse.js compat) is on the v3 list.
+            //
+            // PeerSpec borrows the `jid` field as `&str`, so we
+            // stash the JID strings in a stable Vec first and
+            // then immutably borrow into the spec list. This
+            // keeps the borrow checker happy without any unsafe.
+            struct PreSpec {
+                peer_jid: String,
+                device: u32,
+                kex: Option<omemo_pep::KexCarrier>,
+            }
+            let mut prespecs: Vec<PreSpec> = Vec::new();
+            for (peer_jid, device_ids) in &occupant_devs {
+                for &device in device_ids {
+                    let kex = if store
+                        .load_session_snapshot(peer_jid.as_str(), device)
+                        .map_err(|e| anyhow!("load_session: {e}"))?
+                        .is_none()
+                    {
+                        let mut ephemeral_priv = [0u8; 32];
+                        OsRng.fill_bytes(&mut ephemeral_priv);
+                        let bundle = fetch_bundle(client, Some(peer_jid.clone()), device)
+                            .await
+                            .map_err(|e| anyhow!("fetch_bundle({peer_jid}/{device}): {e}"))?;
+                        let opk_id = bundle
+                            .prekeys
+                            .first()
+                            .ok_or_else(|| anyhow!("peer {peer_jid}/{device} bundle has no OPKs"))?
+                            .id;
+                        Some(bootstrap_and_save_active(
+                            store,
+                            peer_jid.as_str(),
+                            device,
+                            &bundle,
+                            opk_id,
+                            ephemeral_priv,
+                            random_priv_provider(32),
+                        )?)
+                    } else {
+                        None
+                    };
+                    prespecs.push(PreSpec {
+                        peer_jid: peer_jid.as_str().to_owned(),
+                        device,
+                        kex,
+                    });
+                }
+            }
+            let specs: Vec<(PeerSpec<'_>, Box<dyn omemo_doubleratchet::dh_ratchet::DhPrivProvider>)> =
+                prespecs
+                    .iter()
+                    .map(|p| {
+                        (
+                            PeerSpec {
+                                jid: p.peer_jid.as_str(),
+                                device_id: p.device,
+                                kex: p.kex.clone(),
+                            },
+                            random_priv_provider(16),
+                        )
+                    })
+                    .collect();
+            let encrypted = encrypt_to_peers(
+                store,
+                own_device_id,
+                room_jid.as_str(),
+                &body,
+                specs,
+            )
+            .map_err(|e| anyhow!("encrypt_to_peers: {e}"))?;
+            muc.send_groupchat(client, &encrypted)
+                .await
+                .map_err(|e| anyhow!("send_groupchat: {e}"))?;
+            emit(&Event::Sent {
+                peer: room.clone(),
+                device: 0,
+                backend: BackendArg::Twomemo,
+                id,
+            })
+            .await?;
+            // Note: emitting `sent` with peer=room and device=0 is
+            // a slight overload of the 1:1 event shape — could be
+            // a separate `muc_sent` event. Kept compact for now.
+            let _ = room;
+        }
+        Command::RefreshMuc { room, id } => {
+            let room_jid = BareJid::from_str_strict(&room)?;
+            let muc = rooms
+                .get(&room_jid)
+                .ok_or_else(|| anyhow!("not in MUC {room}"))?;
+            let occupant_devs = muc
+                .refresh_device_lists(client, store)
+                .await
+                .map_err(|e| anyhow!("refresh_device_lists: {e}"))?;
+            let infos = occupant_infos(muc, &occupant_devs);
+            occupants_cache.insert(room_jid, occupant_devs);
+            emit(&Event::MucRefreshed {
+                room,
+                occupants: infos,
+                id,
+            })
+            .await?;
+        }
+        Command::LeaveMuc { room, id } => {
+            let room_jid = BareJid::from_str_strict(&room)?;
+            if let Some(muc) = rooms.remove(&room_jid) {
+                let _ = muc.send_leave(client).await;
+            }
+            occupants_cache.remove(&room_jid);
+            emit(&Event::MucLeft { room, id }).await?;
+        }
         Command::Status { id } => {
             // Session counts would need a `Store::list_sessions`
             // accessor that doesn't exist yet — return -1 sentinels
@@ -506,6 +796,150 @@ async fn handle_command(
             .await?;
         }
         Command::Shutdown => unreachable!("shutdown is handled at main_loop top-level"),
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// MUC helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve `(real_jid, devices)` pairs back to the room's
+/// `(real_jid, nick, devices)` triples for the wire event shape.
+fn occupant_infos(
+    muc: &MucRoom,
+    devs: &[(BareJid, Vec<u32>)],
+) -> Vec<MucOccupantInfo> {
+    let mut out = Vec::with_capacity(devs.len());
+    for (jid, devices) in devs {
+        // Find the in-room nick for this real_jid (best-effort).
+        let nick = muc
+            .occupants
+            .values()
+            .find(|o| o.real_jid.as_ref() == Some(jid))
+            .map(|o| o.nick.clone())
+            .unwrap_or_default();
+        out.push(MucOccupantInfo {
+            real_jid: jid.to_string(),
+            nick,
+            devices: devices.clone(),
+        });
+    }
+    out
+}
+
+async fn handle_presence(
+    rooms: &mut HashMap<BareJid, MucRoom>,
+    presence: &xmpp_parsers::presence::Presence,
+) {
+    use omemo_pep::MucEvent;
+    let Some(from) = presence.from.as_ref() else {
+        return;
+    };
+    let from_bare = from.to_bare();
+    let Some(muc) = rooms.get_mut(&from_bare) else {
+        return;
+    };
+    let event = match muc.handle_presence(presence) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    match event {
+        MucEvent::OccupantJoined { occupant } => {
+            let _ = emit(&Event::MucOccupantJoined {
+                room: from_bare.to_string(),
+                nick: occupant.nick.clone(),
+                real_jid: occupant.real_jid.as_ref().map(|j| j.to_string()),
+            })
+            .await;
+        }
+        MucEvent::OccupantLeft { nick } => {
+            let _ = emit(&Event::MucOccupantLeft {
+                room: from_bare.to_string(),
+                nick,
+            })
+            .await;
+        }
+        _ => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_inbound_muc(
+    own_jid: &BareJid,
+    _client: &mut Client,
+    store: &mut Store,
+    own_device_id: u32,
+    rooms: &HashMap<BareJid, MucRoom>,
+    msg: &xmpp_parsers::message::Message,
+    sender_opt: Option<&BareJid>,
+    encrypted_any: EncryptedAny,
+) -> Result<()> {
+    let from_full = msg
+        .from
+        .as_ref()
+        .and_then(|j| j.try_as_full().ok().cloned())
+        .ok_or_else(|| anyhow!("groupchat <message> has no full from-JID"))?;
+    let _ = sender_opt; // sender_opt is bare-of-room; we want the occupant's real bare below
+    let room_bare = from_full.to_bare();
+    let muc = rooms
+        .get(&room_bare)
+        .ok_or_else(|| anyhow!("groupchat from unknown room: {room_bare}"))?;
+    let real_bare = muc
+        .resolve_sender_real_jid(&from_full)
+        .ok_or_else(|| anyhow!("can't resolve real JID for {from_full}"))?
+        .clone();
+    let nick = from_full.resource().to_string();
+
+    // Skip our own MUC echo: alice sends to room → ejabberd reflects
+    // back to alice. Alice's device id isn't in `<keys>` (we don't
+    // encrypt to ourselves) so `inbound_kind` would error. Drop it.
+    if &real_bare == own_jid {
+        return Ok(());
+    }
+
+    match encrypted_any {
+        EncryptedAny::Twomemo(encrypted) => {
+            let sender_device = encrypted.sid;
+            let kind = inbound_kind(&encrypted, own_jid.as_str(), own_device_id)
+                .context("classify groupchat inbound (twomemo)")?;
+            let recovered = match kind {
+                InboundKind::Kex => receive_first_message(
+                    store,
+                    &encrypted,
+                    own_jid.as_str(),
+                    own_device_id,
+                    room_bare.as_str(),
+                    real_bare.as_str(),
+                    sender_device,
+                    TrustPolicy::Tofu,
+                    random_priv_provider(16),
+                )?,
+                InboundKind::Follow => receive_followup(
+                    store,
+                    &encrypted,
+                    own_jid.as_str(),
+                    own_device_id,
+                    room_bare.as_str(),
+                    real_bare.as_str(),
+                    sender_device,
+                    random_priv_provider(16),
+                )?,
+            };
+            let _ = replenish_opks(store, REPLENISH_TARGET, &mut OsRng);
+            emit(&Event::MucMessage {
+                room: room_bare.to_string(),
+                from_real_jid: real_bare.to_string(),
+                from_nick: nick,
+                device: sender_device,
+                backend: BackendArg::Twomemo,
+                body: recovered.body,
+            })
+            .await?;
+        }
+        EncryptedAny::Oldmemo(_) => {
+            return Err(anyhow!("groupchat OMEMO 0.3 inbound not supported in v2"));
+        }
     }
     Ok(())
 }
