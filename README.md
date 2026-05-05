@@ -40,6 +40,7 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 7.5 | oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real XMPP |
 | 8 | Converse.js E2E rig | ✅ | multi-session browser ↔ CLI E2E (`docs/converse-e2e.md`) |
 | 9 | Stdio daemon (nan-curunir-shaped API) | ✅ | JSON Lines daemon with 1:1 + MUC OMEMO 2 (`docs/daemon-protocol.md`) |
+| 10 | nan-curunir migration | 🚧 | bot orchestrator swaps Matrix for XMPP daemon (downstream repo: `nan-curunir/docs/migration-xmpp.md`) |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
 fixture. `cargo test --workspace` passes 64 unit/replay tests; an

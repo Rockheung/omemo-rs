@@ -40,6 +40,7 @@ OMEMO 2 만 구현합니다.
 | 7.5 | oldmemo cross-impl 게이트 | ✅ | `python_interop --backend oldmemo` 양방향 (실제 XMPP) |
 | 8 | Converse.js E2E rig | ✅ | 멀티 세션 브라우저 ↔ CLI E2E (`docs/converse-e2e.md`) |
 | 9 | Stdio 데몬 (nan-curunir용 API) | ✅ | JSON Lines 데몬, 1:1 + MUC OMEMO 2 (`docs/daemon-protocol.md`) |
+| 10 | nan-curunir 마이그레이션 | 🚧 | 봇 오케스트레이터를 Matrix → XMPP 로 (다운스트림: `nan-curunir/docs/migration-xmpp.md`) |
 
 암호 계층은 모든 픽스처에서 Syndace Python 스택과 byte-equal 로 검증됩니다.
 `cargo test --workspace` 는 64개의 unit/replay 테스트를 통과하며,
