@@ -512,7 +512,7 @@ running against it must use `--backend oldmemo` for outbound. OMEMO
 2 in Converse.js is the next upstream-track stage (and the reason
 omemo-rs needed dual-backend support in the first place).
 
-## Stage 10 — nan-curunir migration 🚧
+## Stage 10 — nan-curunir migration ✅
 
 The first real downstream user of omemo-rs. nan-curunir is a
 Matrix-based bot orchestrator (`https://github.com/Rockheung/nan-
@@ -527,25 +527,25 @@ The full plan, decision log, and phase breakdown live at
 `<nan-curunir-repo>/docs/migration-xmpp.md`. This entry exists
 as a forward pointer + status anchor.
 
-Phases tracked under the parent task list (omemo-rs side, not
-inside this repo's TODO.md since the work is in another repo):
+Phases (all on `feat/xmpp-migration` branch in the nan-curunir
+repo):
 
-* **M1** Migration plan doc + Stage 10 entry — *in progress*.
-* **M2** `channel-xmpp` crate scaffold — pending.
+* **M1** Migration plan doc + Stage 10 entry — ✅
+* **M2** `nan-curunir/src/xmpp/` module scaffold — ✅
 * **M3** Daemon supervisor (spawn `omemo-rs-cli` as a child;
-  parse JSON Lines events; forward commands; restart on death)
-  — pending.
+  parse JSON Lines events; forward commands; graceful shutdown)
+  — ✅
 * **M4** `XmppMessenger` implementing nan-curunir's `Messenger`
-  trait (1:1 + MUC) — pending.
-* **M5** `XmppAccountManager` over ejabberd REST API — pending,
-  parallel to M3+M4.
+  trait (1:1 + MUC) — ✅
+* **M5** `XmppAccountManager` over ejabberd REST API — ✅
 * **M6** `XmppFactory` + a `transport: matrix | xmpp` config
-  switch in `curunir::run` — pending.
+  switch in `curunir::run` — ✅
 * **M7** **GATE**: full e2e test, real ejabberd, user → Curunír
-  reply round-trip — pending.
+  reply round-trip — ✅ (`nan_curunir_xmpp_round_trip`, 14.9s)
 * **M8** Deployment polish: docker-compose, systemd unit, Synapse
-  → ejabberd swap in `docker-compose.hindsight.yml` — pending.
+  → ejabberd swap in `docker-compose.hindsight.yml` — pending
+  (downstream)
 
-Once M7 lands, this stage flips to ✅ and the project hits its
+With M7 green, omemo-rs has hit its
 v1.0 watershed: AGPL-free Rust XMPP bot stack, end-to-end OMEMO,
 production-deployable.
