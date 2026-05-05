@@ -337,7 +337,19 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
     .await?;
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(64);
-    tokio::spawn(stdin_reader(cmd_tx));
+    tokio::spawn(stdin_reader(cmd_tx.clone()));
+
+    // Signal-driven shutdown — orchestrators send SIGTERM (kill,
+    // systemd, container stop) to terminate cleanly; an
+    // interactive shell sends SIGINT (Ctrl-C). Both translate
+    // into the same `Command::Shutdown` the JSON Lines protocol
+    // already handles, so the cleanup path stays singular.
+    #[cfg(unix)]
+    tokio::spawn(signal_listener(cmd_tx));
+    #[cfg(not(unix))]
+    {
+        let _ = cmd_tx; // Windows path: stdin EOF is the only shutdown trigger.
+    }
 
     let mut rooms: HashMap<BareJid, MucRoom> = HashMap::new();
     let mut occupants_cache: HashMap<BareJid, Vec<(BareJid, Vec<u32>)>> = HashMap::new();
@@ -577,6 +589,7 @@ async fn handle_command(
             body,
             id,
         } => {
+            tracing::info!(peer = %peer, device, ?backend, body_len = body.len(), "send");
             let peer_jid = BareJid::from_str_strict(&peer)?;
             send_one(client, store, own_device_id, &peer_jid, device, backend, &body)
                 .await
@@ -947,6 +960,30 @@ async fn handle_inbound_muc(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Listen for SIGTERM and SIGINT and synthesise a `Shutdown`
+/// command on the same channel stdin uses. The main loop already
+/// knows how to handle `Shutdown` cleanly (drain pending events,
+/// send `</stream:stream>`, emit `goodbye`, exit 0); reusing it
+/// keeps shutdown semantics consistent regardless of trigger.
+#[cfg(unix)]
+async fn signal_listener(tx: mpsc::Sender<Command>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut sigint = match signal(SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let signal_name = tokio::select! {
+        _ = sigterm.recv() => "SIGTERM",
+        _ = sigint.recv()  => "SIGINT",
+    };
+    tracing::info!(signal = signal_name, "shutdown signal received");
+    let _ = tx.send(Command::Shutdown).await;
+}
 
 /// Read JSON Lines from stdin into the command channel. Stdin EOF
 /// closes the channel so the main loop exits cleanly.
