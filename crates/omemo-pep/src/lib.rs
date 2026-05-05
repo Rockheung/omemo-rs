@@ -26,7 +26,7 @@ pub use omemo_stanza::{
     Bundle, Device, DeviceList, Encrypted, Key, KeysGroup, PreKey, SignedPreKey,
 };
 pub use omemo_session::Backend;
-pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event};
+pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event, Stanza};
 
 mod message;
 mod message_old;
@@ -62,8 +62,8 @@ pub use store_old::{
     receive_first_message_oldmemo, receive_followup_oldmemo,
 };
 pub use wire::{
-    send_encrypted, send_encrypted_old, wait_for_encrypted, wait_for_encrypted_any, EncryptedAny,
-    WireError,
+    parse_encrypted_message, send_encrypted, send_encrypted_old, wait_for_encrypted,
+    wait_for_encrypted_any, EncryptedAny, WireError,
 };
 
 pub use omemo_session::{OwnIdentity, SessionStoreError, Store, TrustState, TrustedDevice};

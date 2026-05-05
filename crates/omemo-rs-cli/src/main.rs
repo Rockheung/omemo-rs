@@ -19,6 +19,8 @@
 //! Trust policy: hard-coded TOFU on the receive side. Production use
 //! would expose this as a flag and persist explicit user decisions.
 
+mod daemon;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -116,6 +118,20 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         timeout: u64,
     },
+    /// Long-running JSON-Lines stdio daemon. Stays connected,
+    /// accepts commands on stdin, emits events on stdout — for
+    /// orchestrator integration (e.g. nan-curunir). See
+    /// `crates/omemo-rs-cli/src/daemon.rs` and
+    /// `docs/daemon-protocol.md`.
+    Daemon {
+        /// Local device id (used the first time we open a fresh
+        /// store; ignored on existing stores).
+        #[arg(long)]
+        device_id: Option<u32>,
+        /// OPK pool size (used on first identity install).
+        #[arg(long, default_value_t = DEFAULT_OPK_COUNT)]
+        opk_count: u32,
+    },
 }
 
 #[tokio::main]
@@ -136,6 +152,21 @@ async fn main() -> Result<()> {
             backend,
         } => run_send(&cli, &bare_jid, &store_path, peer, *peer_device, body, *backend).await,
         Cmd::Recv { timeout } => run_recv(&cli, &bare_jid, &store_path, *timeout).await,
+        Cmd::Daemon {
+            device_id,
+            opk_count,
+        } => {
+            let cfg = daemon::DaemonConfig {
+                bare_jid: bare_jid.clone(),
+                password: cli.password.clone(),
+                store_path: store_path.clone(),
+                insecure_tcp: cli.insecure_tcp.clone(),
+                starttls_addr: cli.starttls_addr.clone(),
+                device_id_hint: *device_id,
+                opk_count: *opk_count,
+            };
+            daemon::run(cfg).await
+        }
     }
 }
 

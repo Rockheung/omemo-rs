@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Minimal 1:1 OMEMO 2 chat CLI built on omemo-pep — production-style usage example."
+description = "OMEMO chat CLI — one-shot send/recv plus a long-running JSON Lines daemon for orchestrator integration (nan-curunir successor)."
 
 [[bin]]
 name = "omemo-rs-cli"
@@ -12,11 +12,15 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 anyhow = { workspace = true }
 rand_core = { workspace = true }
 futures-util = { workspace = true }
 xmpp-parsers = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 omemo-pep = { path = "../omemo-pep" }
 omemo-twomemo = { path = "../omemo-twomemo" }

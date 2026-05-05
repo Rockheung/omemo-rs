@@ -98,6 +98,40 @@ pub async fn wait_for_encrypted(
     Err(WireError::StreamEnded)
 }
 
+/// Inspect an already-popped `<message>` and, if it carries an
+/// `<encrypted>` payload (OMEMO 2 or OMEMO 0.3), return the parsed
+/// payload + sender bare JID.
+///
+/// Use this from a daemon-style outer event loop where you've
+/// already pulled the stanza off `client.next()` for routing
+/// purposes — calling [`wait_for_encrypted_any`] in that situation
+/// would lose the stanza you just popped (it goes back to polling
+/// the stream, missing the message in hand).
+pub fn parse_encrypted_message(
+    msg: &XmppMessage,
+) -> Result<Option<(Option<BareJid>, EncryptedAny)>, WireError> {
+    let from = msg.from.as_ref().map(|j| j.to_bare());
+    for p in &msg.payloads {
+        if p.name() != ENCRYPTED_ELEM {
+            continue;
+        }
+        match p.ns().as_str() {
+            OMEMO2_NS => {
+                let xml = String::from(p);
+                let parsed = Encrypted::parse(&xml).map_err(WireError::Parse)?;
+                return Ok(Some((from, EncryptedAny::Twomemo(parsed))));
+            }
+            OMEMO_OLD_NS => {
+                let xml = String::from(p);
+                let parsed = OldEncrypted::parse(&xml).map_err(WireError::Parse)?;
+                return Ok(Some((from, EncryptedAny::Oldmemo(parsed))));
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
 /// Dual-backend variant of [`wait_for_encrypted`]. Returns the first
 /// `<encrypted>` payload arriving in *either* the OMEMO 2 namespace or
 /// the OMEMO 0.3 (`eu.siacs.conversations.axolotl`) namespace, wrapped
@@ -109,24 +143,8 @@ pub async fn wait_for_encrypted_any(
         let Event::Stanza(Stanza::Message(msg)) = event else {
             continue;
         };
-        let from = msg.from.as_ref().map(|j| j.to_bare());
-        for p in &msg.payloads {
-            if p.name() != ENCRYPTED_ELEM {
-                continue;
-            }
-            match p.ns().as_str() {
-                OMEMO2_NS => {
-                    let xml = String::from(p);
-                    let parsed = Encrypted::parse(&xml).map_err(WireError::Parse)?;
-                    return Ok((from, EncryptedAny::Twomemo(parsed)));
-                }
-                OMEMO_OLD_NS => {
-                    let xml = String::from(p);
-                    let parsed = OldEncrypted::parse(&xml).map_err(WireError::Parse)?;
-                    return Ok((from, EncryptedAny::Oldmemo(parsed)));
-                }
-                _ => {}
-            }
+        if let Some(parsed) = parse_encrypted_message(&msg)? {
+            return Ok(parsed);
         }
     }
     Err(WireError::StreamEnded)
