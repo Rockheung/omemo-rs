@@ -109,12 +109,28 @@ api_permissions:
       - ejabberd_ctl
     who: all
     what: "*"
-  "admin access":
+  # Loopback IP-based admin access — allows nan-curunir's
+  # XmppAccountManager (sibling docker container or host process)
+  # to drive `register` / `create_room` / `set_room_affiliation`
+  # over `mod_http_api` without requiring a per-call OAuth token.
+  # Compose maps the API port to 0.0.0.0:5280 but inside the
+  # ejabberd container, requests come in from the docker bridge
+  # IP (172.18.x.x), which we whitelist here too. NOT acceptable
+  # in production — replace with `oauth` scope checks then.
+  "admin access from local network":
+    from:
+      - mod_http_api
     who:
-      access:
-        allow:
-          - acl: loopback
-          - acl: admin
+      ip: "127.0.0.0/8"
+    what:
+      - "*"
+      - "!stop"
+      - "!start"
+  "admin access from docker bridge":
+    from:
+      - mod_http_api
+    who:
+      ip: "172.16.0.0/12"
     what:
       - "*"
       - "!stop"
