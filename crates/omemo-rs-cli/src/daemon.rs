@@ -463,6 +463,12 @@ pub struct DaemonConfig {
     pub starttls_addr: Option<String>,
     pub device_id_hint: Option<u32>,
     pub opk_count: u32,
+    /// Applies on inbound `receive_first_message` (KEX) calls.
+    /// `Manual` records new device as `Pending` and the daemon
+    /// emits a `pending_trust` event after the body is decrypted;
+    /// outbound `send` to that device fails with PeerPending
+    /// until the orchestrator calls `set_trust`.
+    pub trust_policy: TrustPolicy,
 }
 
 pub async fn run(cfg: DaemonConfig) -> Result<()> {
@@ -522,6 +528,7 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
         cmd_rx,
         &mut rooms,
         &mut occupants_cache,
+        cfg.trust_policy,
     )
     .await;
 
@@ -583,6 +590,7 @@ async fn main_loop(
     mut cmd_rx: mpsc::Receiver<Command>,
     rooms: &mut HashMap<BareJid, MucRoom>,
     occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
+    trust_policy: TrustPolicy,
 ) -> ExitReason {
     let mut bundle_health = tokio::time::interval(BUNDLE_HEALTH_INTERVAL);
     // The first tick fires immediately; we don't need a check
@@ -640,9 +648,9 @@ async fn main_loop(
                     };
                     let Some((sender_opt, encrypted_any)) = parsed else { continue };
                     let result = if is_groupchat {
-                        handle_inbound_muc(own_jid, client, store, own_device_id, rooms, &msg, sender_opt.as_ref(), encrypted_any).await
+                        handle_inbound_muc(own_jid, client, store, own_device_id, rooms, &msg, sender_opt.as_ref(), encrypted_any, trust_policy).await
                     } else {
-                        handle_inbound(own_jid, client, store, own_device_id, sender_opt, encrypted_any).await
+                        handle_inbound(own_jid, client, store, own_device_id, sender_opt, encrypted_any, trust_policy).await
                     };
                     if let Err(e) = result {
                         // Distinguish IK-drift from other inbound
@@ -731,6 +739,7 @@ async fn handle_inbound(
     own_device_id: u32,
     sender_jid_opt: Option<BareJid>,
     encrypted_any: EncryptedAny,
+    trust_policy: TrustPolicy,
 ) -> Result<()> {
     let sender_jid =
         sender_jid_opt.ok_or_else(|| anyhow!("inbound message has no `from` JID"))?;
@@ -740,6 +749,7 @@ async fn handle_inbound(
             let sender_device = encrypted.sid;
             let kind = inbound_kind(&encrypted, own_jid.as_str(), own_device_id)
                 .context("classify inbound (twomemo)")?;
+            let was_kex = matches!(kind, InboundKind::Kex);
             let recovered = match kind {
                 InboundKind::Kex => receive_first_message(
                     store,
@@ -749,7 +759,7 @@ async fn handle_inbound(
                     own_jid.as_str(),
                     sender_jid.as_str(),
                     sender_device,
-                    TrustPolicy::Tofu,
+                    trust_policy,
                     random_priv_provider(16),
                 )?,
                 InboundKind::Follow => receive_followup(
@@ -773,11 +783,15 @@ async fn handle_inbound(
                 timestamp: recovered.timestamp,
             })
             .await?;
+            if was_kex {
+                emit_pending_trust_if_needed(store, &sender_jid, sender_device).await;
+            }
         }
         EncryptedAny::Oldmemo(encrypted) => {
             let sender_device = encrypted.sid;
             let kind = inbound_kind_oldmemo(&encrypted, own_device_id)
                 .context("classify inbound (oldmemo)")?;
+            let was_kex = matches!(kind, InboundOldKind::Kex);
             let body_bytes = match kind {
                 InboundOldKind::Kex => {
                     // Need sender's IK in Ed25519 form — fetch the
@@ -793,7 +807,7 @@ async fn handle_inbound(
                         sender_jid.as_str(),
                         sender_device,
                         bundle.identity_key_ed,
-                        TrustPolicy::Tofu,
+                        trust_policy,
                         random_priv_provider(16),
                     )?
                 }
@@ -817,9 +831,37 @@ async fn handle_inbound(
                 timestamp: String::new(),
             })
             .await?;
+            if was_kex {
+                emit_pending_trust_if_needed(store, &sender_jid, sender_device).await;
+            }
         }
     }
     Ok(())
+}
+
+/// After a KEX bootstrap, if the device's recorded trust state
+/// is `Pending` (i.e. we ran under `--trust-policy manual`),
+/// emit a `pending_trust` event so the orchestrator can prompt
+/// an operator. Best-effort: failures here don't abort the
+/// inbound — the body has already been delivered.
+async fn emit_pending_trust_if_needed(
+    store: &Store,
+    peer_jid: &BareJid,
+    device: u32,
+) {
+    let trusted = match store.trusted_device(peer_jid.as_str(), device) {
+        Ok(Some(t)) => t,
+        _ => return,
+    };
+    if !matches!(trusted.state, omemo_pep::TrustState::Pending) {
+        return;
+    }
+    let _ = emit(&Event::PendingTrust {
+        peer: peer_jid.to_string(),
+        device,
+        ik_fingerprint: hex_encode(&trusted.ik_pub),
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,6 +1327,7 @@ async fn handle_inbound_muc(
     msg: &xmpp_parsers::message::Message,
     sender_opt: Option<&BareJid>,
     encrypted_any: EncryptedAny,
+    trust_policy: TrustPolicy,
 ) -> Result<()> {
     let from_full = msg
         .from
@@ -1314,6 +1357,7 @@ async fn handle_inbound_muc(
             let sender_device = encrypted.sid;
             let kind = inbound_kind(&encrypted, own_jid.as_str(), own_device_id)
                 .context("classify groupchat inbound (twomemo)")?;
+            let was_kex = matches!(kind, InboundKind::Kex);
             let recovered = match kind {
                 InboundKind::Kex => receive_first_message(
                     store,
@@ -1323,7 +1367,7 @@ async fn handle_inbound_muc(
                     room_bare.as_str(),
                     real_bare.as_str(),
                     sender_device,
-                    TrustPolicy::Tofu,
+                    trust_policy,
                     random_priv_provider(16),
                 )?,
                 InboundKind::Follow => receive_followup(
@@ -1347,6 +1391,9 @@ async fn handle_inbound_muc(
                 body: recovered.body,
             })
             .await?;
+            if was_kex {
+                emit_pending_trust_if_needed(store, &real_bare, sender_device).await;
+            }
         }
         EncryptedAny::Oldmemo(_) => {
             return Err(anyhow!("groupchat OMEMO 0.3 inbound not supported in v2"));

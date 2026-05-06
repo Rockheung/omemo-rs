@@ -80,8 +80,35 @@ struct Cli {
     #[arg(long, value_name = "DIR", env = "OMEMO_RS_STORE_DIR")]
     store_dir: Option<PathBuf>,
 
+    /// Trust policy applied on first sight of a peer device.
+    ///   * `tofu` (default) — auto-trust new devices, log
+    ///     `pending_trust` only on identity-key drift.
+    ///   * `manual` — record new device as `Pending`; emit
+    ///     `pending_trust` event so the orchestrator can
+    ///     prompt the operator before allowing outbound to
+    ///     it. Inbound bodies still decrypt normally — the
+    ///     gate only blocks `send` until `set_trust(..,
+    ///     Trusted)` is issued.
+    #[arg(long, value_enum, default_value_t = TrustPolicyArg::Tofu, global = true)]
+    trust_policy: TrustPolicyArg,
+
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TrustPolicyArg {
+    Tofu,
+    Manual,
+}
+
+impl TrustPolicyArg {
+    fn as_policy(self) -> TrustPolicy {
+        match self {
+            TrustPolicyArg::Tofu => TrustPolicy::Tofu,
+            TrustPolicyArg::Manual => TrustPolicy::Manual,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -164,6 +191,7 @@ async fn main() -> Result<()> {
                 starttls_addr: cli.starttls_addr.clone(),
                 device_id_hint: *device_id,
                 opk_count: *opk_count,
+                trust_policy: cli.trust_policy.as_policy(),
             };
             daemon::run(cfg).await
         }
