@@ -401,6 +401,19 @@ enum ExitReason {
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
+/// How often the daemon checks bundle health. Cheap — counts
+/// rows in the OPKs table, no network unless something needs
+/// fixing. Production deployments can sit at 60s; under load
+/// (lots of incoming KEXes) this might tick more often
+/// reactively too.
+const BUNDLE_HEALTH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Threshold below which the daemon proactively replenishes the
+/// OPK pool. XEP-0384 §5.3.2 says ≥ 100 is normal; we trigger
+/// refill at the half-life so a noisy bot can't deplete the
+/// pool faster than the timer ticks.
+const OPK_REFILL_THRESHOLD: u32 = 50;
+
 async fn main_loop(
     own_jid: &BareJid,
     client: &mut Client,
@@ -410,8 +423,24 @@ async fn main_loop(
     rooms: &mut HashMap<BareJid, MucRoom>,
     occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
 ) -> ExitReason {
+    let mut bundle_health = tokio::time::interval(BUNDLE_HEALTH_INTERVAL);
+    // The first tick fires immediately; we don't need a check
+    // right after spawn because identity-publish already wrote
+    // a fresh bundle.
+    bundle_health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let _ = bundle_health.tick().await;
+
     loop {
         tokio::select! {
+            _ = bundle_health.tick() => {
+                if let Err(e) = check_bundle_health(client, store, own_device_id).await {
+                    let _ = emit(&Event::Error {
+                        kind: "bundle_health".into(),
+                        detail: e.to_string(),
+                        id: None,
+                    }).await;
+                }
+            },
             cmd = cmd_rx.recv() => match cmd {
                 Some(Command::Shutdown) => return ExitReason::Shutdown,
                 Some(cmd) => {
@@ -467,6 +496,52 @@ async fn main_loop(
             }
         }
     }
+}
+
+/// Proactive bundle maintenance — invoked on a timer.
+///
+/// Reads the unconsumed-OPK count from the store. If we're below
+/// `OPK_REFILL_THRESHOLD`, top up to 100 (matches the default
+/// install pool size) and republish the bundle so peers see the
+/// new public halves. No-op when the pool is healthy.
+///
+/// Why this exists: the reactive refill paths (one per inbound
+/// KEX) only fire AFTER an OPK has been consumed. Under
+/// peer-fanout load (e.g. a fresh group of users all bootstrap
+/// against this bot in the same minute) the pool could drain
+/// faster than the publish-republish RTT. Then the next peer's
+/// bundle fetch hits an empty `<prekeys>` and X3DH passive
+/// fails. The 60s timer caps the worst-case window.
+async fn check_bundle_health(
+    client: &mut Client,
+    store: &mut Store,
+    own_device_id: u32,
+) -> anyhow::Result<()> {
+    let unconsumed = store
+        .count_unconsumed_opks()
+        .map_err(|e| anyhow::anyhow!("count_unconsumed_opks: {e}"))?;
+    if unconsumed >= OPK_REFILL_THRESHOLD {
+        return Ok(());
+    }
+    tracing::info!(
+        unconsumed,
+        threshold = OPK_REFILL_THRESHOLD,
+        "OPK pool below threshold; replenishing"
+    );
+    let added = replenish_opks(store, REPLENISH_TARGET, &mut OsRng)
+        .map_err(|e| anyhow::anyhow!("replenish_opks: {e}"))?;
+    tracing::info!(added, "OPKs replenished");
+    publish_my_bundle(store, client, own_device_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("publish_my_bundle: {e}"))?;
+    // Also republish the OMEMO 0.3 bundle so dual-namespace
+    // peers see the refilled pool too.
+    let old_bundle = omemo_pep::old_bundle_from_store(store)
+        .map_err(|e| anyhow::anyhow!("old_bundle_from_store: {e}"))?;
+    publish_old_bundle(client, own_device_id, &old_bundle)
+        .await
+        .map_err(|e| anyhow::anyhow!("publish_old_bundle: {e}"))?;
+    Ok(())
 }
 
 async fn handle_inbound(
