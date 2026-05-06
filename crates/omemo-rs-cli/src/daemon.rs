@@ -42,6 +42,7 @@
 //! reconnect on network blips is Phase 3 (production polish).
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,24 @@ use std::time::{Duration, Instant};
 /// the value is available from anywhere in the file without
 /// threading it through every handler signature.
 static STARTED_AT: OnceLock<Instant> = OnceLock::new();
+
+/// Coarse connection state, surfaced in `Status` events.
+/// `0 = online`, `1 = reconnecting`. tokio-xmpp's StanzaStream
+/// performs XEP-0198 SM negotiation + auto-reconnect under the
+/// hood (P3-6); the daemon just observes the resulting Online /
+/// Disconnected events and flips this flag so `Status` responses
+/// reflect what's happening on the wire.
+static CONNECTION_STATE: AtomicU8 = AtomicU8::new(0);
+
+const CONN_ONLINE: u8 = 0;
+const CONN_RECONNECTING: u8 = 1;
+
+fn connection_state_str() -> &'static str {
+    match CONNECTION_STATE.load(Ordering::Relaxed) {
+        CONN_RECONNECTING => "reconnecting",
+        _ => "online",
+    }
+}
 
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
@@ -452,6 +471,15 @@ pub enum Event {
     /// XMPP stream ended (server side closed, network error, etc.).
     /// The daemon will exit shortly after this.
     Disconnected { reason: String },
+    /// Stream came back online after a transient TCP drop —
+    /// either via XEP-0198 stream resumption (state preserved,
+    /// `resumed: true`) or a fresh bind (`resumed: false`,
+    /// queued outbound stanzas were lost; the in-flight outbox
+    /// covers Send commands but other stanzas would need to be
+    /// re-issued by the orchestrator). The daemon stays alive
+    /// across the disconnect — tokio-xmpp 5.x's StanzaStream
+    /// worker does the SM negotiation + reconnect transparently.
+    Reconnected { jid: String, resumed: bool },
     /// Final event before exit. Always emitted last.
     Goodbye,
 }
@@ -802,7 +830,39 @@ async fn main_loop(
                         }
                     }
                 }
-                Some(_) => continue,
+                Some(XmppEvent::Online { bound_jid, resumed }) => {
+                    // tokio-xmpp emits Online both on initial bind
+                    // and on every reconnect (XEP-0198 resume or
+                    // fresh-bind). The first one already triggered
+                    // our `Ready` event before the loop started, so
+                    // anything here is a reconnect.
+                    //
+                    // Note: `Disconnected` is never surfaced by the
+                    // c2s Client — its Stream impl silently maps
+                    // `StreamEvent::Suspended` to `continue` and
+                    // only emits `Online { resumed: true|false }`
+                    // when the worker either resumes or rebinds.
+                    // The reconnect-was-happening state therefore
+                    // stays implicit until this event fires.
+                    CONNECTION_STATE.store(CONN_ONLINE, Ordering::Relaxed);
+                    let _ = emit(&Event::Reconnected {
+                        jid: bound_jid.to_string(),
+                        resumed,
+                    })
+                    .await;
+                }
+                Some(XmppEvent::Disconnected(err)) => {
+                    // Currently unreachable for c2s Clients (see
+                    // comment above) but keep the arm so we don't
+                    // silently swallow it if tokio-xmpp ever starts
+                    // emitting it.
+                    let _ = emit(&Event::Disconnected {
+                        reason: err.to_string(),
+                    })
+                    .await;
+                    return ExitReason::StreamEnded;
+                }
+                Some(XmppEvent::Stanza(_)) => continue,
                 None => return ExitReason::StreamEnded,
             }
         }
@@ -1567,7 +1627,7 @@ async fn handle_command_inner(
                 opk_pool_size,
                 joined_muc_count: rooms.len(),
                 uptime_secs,
-                connection_state: "online",
+                connection_state: connection_state_str(),
                 id,
             })
             .await?;
