@@ -662,6 +662,79 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Force-overwrite the recorded identity key for a device,
+    /// resetting its trust state at the same time. Used when the
+    /// orchestrator has confirmed (out-of-band, via fingerprint
+    /// comparison or a trusted side-channel) that a peer's
+    /// device legitimately rotated its IK — e.g. the user
+    /// reinstalled their client. Without this primitive, an
+    /// IK-drift event leaves the bot permanently unable to
+    /// decrypt that peer's traffic.
+    ///
+    /// If no row exists yet this inserts a fresh one (same
+    /// shape as `record_first_seen`).
+    pub fn force_set_ik(
+        &mut self,
+        bare_jid: &str,
+        device_id: u32,
+        new_ik_pub: &[u8; 32],
+        state: TrustState,
+    ) -> Result<(), SessionStoreError> {
+        let now = now_secs();
+        // INSERT-OR-REPLACE on the same (bare_jid, device_id) PK
+        // keeps the schema's first_seen_at semantics simple — we
+        // do reset it on a forced retrust, which is the right
+        // behaviour: the operator is acknowledging this is a
+        // brand-new key as far as the bot is concerned.
+        self.conn.execute(
+            "INSERT OR REPLACE INTO trusted_devices
+                 (bare_jid, device_id, ik_pub, trust_state, first_seen_at)
+              VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                bare_jid,
+                device_id,
+                &new_ik_pub[..],
+                state as i64,
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Enumerate every device currently in `Pending` trust
+    /// state. Used by the daemon's `pending_trusts` query so
+    /// an operator can review + accept/reject queued first-
+    /// sights under Manual trust policy.
+    pub fn pending_devices(&self) -> Result<Vec<TrustedDevice>, SessionStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT bare_jid, device_id, ik_pub, trust_state, first_seen_at
+               FROM trusted_devices
+              WHERE trust_state = ?1
+              ORDER BY first_seen_at",
+        )?;
+        let rows = stmt.query_map(params![TrustState::Pending as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? as u32,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (bare_jid, device_id, ik_blob, state, first_seen_at) = row?;
+            out.push(TrustedDevice {
+                bare_jid,
+                device_id,
+                ik_pub: array_32(&ik_blob)?,
+                state: TrustState::from_i64(state)?,
+                first_seen_at,
+            });
+        }
+        Ok(out)
+    }
+
     // ---- session ----------------------------------------------------------
 
     pub fn save_session(

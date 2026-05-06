@@ -162,9 +162,73 @@ pub enum Command {
         #[serde(default)]
         id: Option<String>,
     },
+    /// Set the trust state for a (peer, device). The
+    /// orchestrator drives this in response to a `pending_trust`
+    /// event (Manual policy) or any application-level "block
+    /// this device" decision.
+    SetTrust {
+        peer: String,
+        device: u32,
+        state: TrustStateArg,
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Force-replace the recorded IK for a device after an
+    /// `ik_drift` event. The orchestrator must have verified
+    /// the new fingerprint out-of-band. `new_ik_hex` is the
+    /// 64-char hex of the new 32-byte Ed25519 IK pub — usually
+    /// echoed from the drift event's `observed_fingerprint`
+    /// field. The trust state goes back to `Trusted` (or the
+    /// supplied `state`, if specified).
+    ForceRetrust {
+        peer: String,
+        device: u32,
+        new_ik_hex: String,
+        #[serde(default = "default_trusted")]
+        state: TrustStateArg,
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Enumerate every device currently in Pending state — the
+    /// queue an admin works through under Manual policy. Reply
+    /// via `pending_trusts` event.
+    ListPending {
+        #[serde(default)]
+        id: Option<String>,
+    },
     /// Graceful shutdown: send `</stream:stream>`, drain pending
     /// events, exit. Closing stdin (EOF) has the same effect.
     Shutdown,
+}
+
+fn default_trusted() -> TrustStateArg {
+    TrustStateArg::Trusted
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrustStateArg {
+    Pending,
+    Trusted,
+    Untrusted,
+}
+
+impl TrustStateArg {
+    fn as_state(self) -> omemo_pep::TrustState {
+        match self {
+            TrustStateArg::Pending => omemo_pep::TrustState::Pending,
+            TrustStateArg::Trusted => omemo_pep::TrustState::Trusted,
+            TrustStateArg::Untrusted => omemo_pep::TrustState::Untrusted,
+        }
+    }
+    #[allow(dead_code)] // wired when --trust-policy manual lands
+    fn from_state(s: omemo_pep::TrustState) -> Self {
+        match s {
+            omemo_pep::TrustState::Pending => TrustStateArg::Pending,
+            omemo_pep::TrustState::Trusted => TrustStateArg::Trusted,
+            omemo_pep::TrustState::Untrusted => TrustStateArg::Untrusted,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -291,11 +355,70 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+    /// A peer device's identity key changed. Decryption of the
+    /// inbound message that triggered this event was aborted
+    /// (the OPK was NOT consumed; the session was NOT updated).
+    /// Orchestrator must verify the new fingerprint out-of-band
+    /// and either issue `force_retrust` to accept the new key
+    /// or `set_trust` with `Untrusted` to permanently refuse.
+    IkDrift {
+        peer: String,
+        device: u32,
+        /// 64-char hex of the IK pub we previously recorded
+        /// for this device.
+        stored_fingerprint: String,
+        /// 64-char hex of the IK pub the inbound `<key kex>`
+        /// claims now. Echo this back as `new_ik_hex` in
+        /// `force_retrust` to accept.
+        observed_fingerprint: String,
+    },
+    /// First-sight of a peer device under Manual trust policy.
+    /// The new device is recorded as `Pending`; subsequent
+    /// inbound from it is decrypted normally (the consume-once
+    /// OPK was already burned by the bootstrap KEX) but the
+    /// orchestrator should prompt an operator to accept or
+    /// reject before this device is allowed to receive
+    /// outbound traffic from us.
+    PendingTrust {
+        peer: String,
+        device: u32,
+        ik_fingerprint: String,
+    },
+    /// Ack of a `set_trust` command.
+    TrustSet {
+        peer: String,
+        device: u32,
+        state: TrustStateArg,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// Ack of a `force_retrust` command.
+    Retrusted {
+        peer: String,
+        device: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// Result of a `list_pending` query.
+    PendingTrusts {
+        entries: Vec<PendingTrustEntry>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
     /// XMPP stream ended (server side closed, network error, etc.).
     /// The daemon will exit shortly after this.
     Disconnected { reason: String },
     /// Final event before exit. Always emitted last.
     Goodbye,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingTrustEntry {
+    pub peer: String,
+    pub device: u32,
+    pub ik_fingerprint: String,
+    /// Unix epoch seconds.
+    pub first_seen_at: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -494,11 +617,30 @@ async fn main_loop(
                         handle_inbound(own_jid, client, store, own_device_id, sender_opt, encrypted_any).await
                     };
                     if let Err(e) = result {
-                        let _ = emit(&Event::Error {
-                            kind: "inbound".into(),
-                            detail: e.to_string(),
-                            id: None,
-                        }).await;
+                        // Distinguish IK-drift from other inbound
+                        // failures so the orchestrator can route
+                        // it to a re-trust workflow rather than
+                        // generic error noise.
+                        let downcast = e.downcast_ref::<omemo_pep::StoreFlowError>();
+                        match downcast {
+                            Some(omemo_pep::StoreFlowError::IkMismatch {
+                                jid, device_id, stored_hex, got_hex,
+                            }) => {
+                                let _ = emit(&Event::IkDrift {
+                                    peer: jid.clone(),
+                                    device: *device_id,
+                                    stored_fingerprint: stored_hex.clone(),
+                                    observed_fingerprint: got_hex.clone(),
+                                }).await;
+                            }
+                            _ => {
+                                let _ = emit(&Event::Error {
+                                    kind: "inbound".into(),
+                                    detail: e.to_string(),
+                                    id: None,
+                                }).await;
+                            }
+                        }
                     }
                 }
                 Some(_) => continue,
@@ -949,9 +1091,83 @@ async fn handle_command(
             })
             .await?;
         }
+        Command::SetTrust {
+            peer,
+            device,
+            state,
+            id,
+        } => {
+            let updated = store
+                .set_trust(&peer, device, state.as_state())
+                .map_err(|e| anyhow!("set_trust: {e}"))?;
+            if !updated {
+                return Err(anyhow!(
+                    "set_trust: no recorded device for {peer}/{device}"
+                ));
+            }
+            emit(&Event::TrustSet {
+                peer,
+                device,
+                state,
+                id,
+            })
+            .await?;
+        }
+        Command::ForceRetrust {
+            peer,
+            device,
+            new_ik_hex,
+            state,
+            id,
+        } => {
+            let new_ik = parse_hex32(&new_ik_hex)
+                .ok_or_else(|| anyhow!("force_retrust: new_ik_hex must be 64 hex chars"))?;
+            store
+                .force_set_ik(&peer, device, &new_ik, state.as_state())
+                .map_err(|e| anyhow!("force_set_ik: {e}"))?;
+            emit(&Event::Retrusted { peer, device, id }).await?;
+        }
+        Command::ListPending { id } => {
+            let entries = store
+                .pending_devices()
+                .map_err(|e| anyhow!("pending_devices: {e}"))?
+                .into_iter()
+                .map(|d| PendingTrustEntry {
+                    peer: d.bare_jid,
+                    device: d.device_id,
+                    ik_fingerprint: hex_encode(&d.ik_pub),
+                    first_seen_at: d.first_seen_at,
+                })
+                .collect();
+            emit(&Event::PendingTrusts { entries, id }).await?;
+        }
         Command::Shutdown => unreachable!("shutdown is handled at main_loop top-level"),
     }
     Ok(())
+}
+
+/// Lowercase-hex encode a 32-byte buffer (64 chars). Fingerprint
+/// representation in the daemon protocol.
+fn hex_encode(bytes: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
+}
+
+/// Parse a 64-char lowercase-hex string back into a 32-byte
+/// buffer. Returns `None` on length / non-hex char errors.
+fn parse_hex32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 // ---------------------------------------------------------------------------
