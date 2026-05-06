@@ -66,7 +66,9 @@ pub use wire::{
     wait_for_encrypted_any, EncryptedAny, WireError,
 };
 
-pub use omemo_session::{OwnIdentity, SessionStoreError, Store, TrustState, TrustedDevice};
+pub use omemo_session::{
+    OutboxEntry, OutboxKind, OwnIdentity, SessionStoreError, Store, TrustState, TrustedDevice,
+};
 
 /// Build a `tokio-xmpp` client that connects in cleartext to a fixed
 /// `host:port` socket address.

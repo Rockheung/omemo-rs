@@ -503,6 +503,44 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
     })
     .await?;
 
+    // Replay any sends a previous daemon process accepted but
+    // didn't finish before crashing (P3-3 in-flight outbox).
+    // We do this *synchronously* before launching the main
+    // event loop / stdin reader: it's quick (one Send per
+    // pending row), it preserves causal ordering, and it
+    // avoids the nasty re-enqueue race where the replayed row
+    // would get duplicated by the normal `Send` arm before
+    // being dequeued.
+    let mut rooms: HashMap<BareJid, MucRoom> = HashMap::new();
+    let mut occupants_cache: HashMap<BareJid, Vec<(BareJid, Vec<u32>)>> = HashMap::new();
+    let pending = store.list_outbox().unwrap_or_default();
+    if !pending.is_empty() {
+        tracing::info!(count = pending.len(), "replaying outbox entries");
+        for entry in pending {
+            let rowid = entry.rowid.expect("listed outbox entry must carry rowid");
+            let cmd = outbox_entry_to_command(entry);
+            if let Err(e) = handle_command_inner(
+                &cfg.bare_jid,
+                &mut client,
+                &mut store,
+                device_id,
+                &mut rooms,
+                &mut occupants_cache,
+                cmd,
+                Some(rowid),
+            )
+            .await
+            {
+                let _ = emit(&Event::Error {
+                    kind: "outbox_replay".into(),
+                    detail: e.to_string(),
+                    id: None,
+                })
+                .await;
+            }
+        }
+    }
+
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(64);
     tokio::spawn(stdin_reader(cmd_tx.clone()));
 
@@ -518,8 +556,6 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
         let _ = cmd_tx; // Windows path: stdin EOF is the only shutdown trigger.
     }
 
-    let mut rooms: HashMap<BareJid, MucRoom> = HashMap::new();
-    let mut occupants_cache: HashMap<BareJid, Vec<(BareJid, Vec<u32>)>> = HashMap::new();
     let exit_reason = main_loop(
         &cfg.bare_jid,
         &mut client,
@@ -908,6 +944,70 @@ async fn handle_inbound(
     Ok(())
 }
 
+/// Best-effort enqueue of a 1:1 send into the outbox. Returns
+/// the rowid the daemon should pass to `dequeue_outbox` after
+/// the fan-out succeeds. `None` on store error — we don't fail
+/// the send just because the outbox couldn't record it.
+fn enqueue_send_outbox(
+    store: &mut Store,
+    peer: &str,
+    device: Option<u32>,
+    backend: BackendArg,
+    body: &str,
+    request_id: Option<&str>,
+) -> Option<i64> {
+    let entry = omemo_pep::OutboxEntry {
+        rowid: None,
+        kind: omemo_pep::OutboxKind::Direct,
+        peer: peer.to_string(),
+        device_id: device,
+        backend: match backend {
+            BackendArg::Twomemo => omemo_pep::Backend::Twomemo,
+            BackendArg::Oldmemo => omemo_pep::Backend::Oldmemo,
+        },
+        body: body.to_string(),
+        request_id: request_id.map(|s| s.to_string()),
+        queued_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    };
+    match store.enqueue_outbox(&entry) {
+        Ok(rowid) => Some(rowid),
+        Err(e) => {
+            tracing::warn!(error = %e, "outbox enqueue failed; proceeding without persistence");
+            None
+        }
+    }
+}
+
+/// Convert a stored outbox row into the `Command` shape the
+/// daemon's normal handler understands. Used by the synchronous
+/// replay path in `daemon::run` — each row's persisted rowid is
+/// passed alongside via the `replay_rowid` hint so
+/// `handle_command_inner` dequeues *that* row on success rather
+/// than enqueuing a duplicate.
+fn outbox_entry_to_command(entry: omemo_pep::OutboxEntry) -> Command {
+    let backend_arg = match entry.backend {
+        omemo_pep::Backend::Twomemo => BackendArg::Twomemo,
+        omemo_pep::Backend::Oldmemo => BackendArg::Oldmemo,
+    };
+    match entry.kind {
+        omemo_pep::OutboxKind::Direct => Command::Send {
+            peer: entry.peer,
+            device: entry.device_id,
+            backend: backend_arg,
+            body: entry.body,
+            id: entry.request_id,
+        },
+        omemo_pep::OutboxKind::Muc => Command::SendMuc {
+            room: entry.peer,
+            body: entry.body,
+            id: entry.request_id,
+        },
+    }
+}
+
 /// After a KEX bootstrap, if the device's recorded trust state
 /// is `Pending` (i.e. we ran under `--trust-policy manual`),
 /// emit a `pending_trust` event so the orchestrator can prompt
@@ -947,6 +1047,34 @@ async fn handle_command(
     occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
     cmd: Command,
 ) -> Result<()> {
+    handle_command_inner(
+        own_jid,
+        client,
+        store,
+        own_device_id,
+        rooms,
+        occupants_cache,
+        cmd,
+        None,
+    )
+    .await
+}
+
+/// `replay_rowid = Some(_)` means this command came from the
+/// outbox replay path and the row already exists in the store —
+/// skip enqueue, dequeue *that* rowid on success. `None` is the
+/// normal stdin path: enqueue on entry, dequeue on success.
+#[allow(clippy::too_many_arguments)]
+async fn handle_command_inner(
+    own_jid: &BareJid,
+    client: &mut Client,
+    store: &mut Store,
+    own_device_id: u32,
+    rooms: &mut HashMap<BareJid, MucRoom>,
+    occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
+    cmd: Command,
+    replay_rowid: Option<i64>,
+) -> Result<()> {
     match cmd {
         Command::Send {
             peer,
@@ -956,6 +1084,17 @@ async fn handle_command(
             id,
         } => {
             tracing::info!(peer = %peer, ?device, ?backend, body_len = body.len(), "send");
+            // Persist this command in the outbox before encrypting,
+            // so a daemon SIGKILL in the middle of fan-out doesn't
+            // silently lose the message. The row is dropped only
+            // after `sent` has been emitted for the whole fan-out.
+            // (Replay on next startup; see `replay_outbox`.)
+            // Replay path skips enqueue — the original row is
+            // still in the store and we'll dequeue *that* one.
+            let outbox_rowid = match replay_rowid {
+                Some(existing) => Some(existing),
+                None => enqueue_send_outbox(store, &peer, device, backend, &body, id.as_deref()),
+            };
             let peer_jid = BareJid::from_str_strict(&peer)?;
             // Resolve the target device set:
             //   Some(d)    → just that one
@@ -1022,6 +1161,10 @@ async fn handle_command(
                     id: id.clone(),
                 })
                 .await?;
+            }
+            // Whole fan-out succeeded → drop the outbox row.
+            if let Some(rowid) = outbox_rowid {
+                let _ = store.dequeue_outbox(rowid);
             }
         }
         Command::Discover { peer, backend, id } => {

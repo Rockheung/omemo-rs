@@ -62,6 +62,7 @@ pub enum SessionStoreError {
 const SCHEMA_V1_SQL: &str = include_str!("../migrations/0001_init.sql");
 const SCHEMA_V2_SQL: &str = include_str!("../migrations/0002_trust.sql");
 const SCHEMA_V3_SQL: &str = include_str!("../migrations/0003_backend.sql");
+const SCHEMA_V4_SQL: &str = include_str!("../migrations/0004_outbox.sql");
 
 /// OMEMO wire-format backend a session uses.
 ///
@@ -100,6 +101,43 @@ pub struct OwnIdentity {
     pub device_id: u32,
     pub ik_seed: [u8; 32],
     pub created_at: i64,
+}
+
+/// Outbox kind (P3-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboxKind {
+    /// 1:1 send. `device_id = None` means fan out to every
+    /// existing session for `peer`.
+    Direct = 0,
+    /// MUC `send_muc`. `device_id` is always `None` for muc rows
+    /// — fan-out is across the room's occupants.
+    Muc = 1,
+}
+
+impl OutboxKind {
+    pub fn as_i64(self) -> i64 {
+        self as i64
+    }
+    pub fn from_i64(v: i64) -> Option<Self> {
+        match v {
+            0 => Some(OutboxKind::Direct),
+            1 => Some(OutboxKind::Muc),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxEntry {
+    /// `Some` once persisted, `None` for in-memory construction.
+    pub rowid: Option<i64>,
+    pub kind: OutboxKind,
+    pub peer: String,
+    pub device_id: Option<u32>,
+    pub backend: Backend,
+    pub body: String,
+    pub request_id: Option<String>,
+    pub queued_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -267,6 +305,14 @@ impl Store {
                 .execute_batch(SCHEMA_V3_SQL)
                 .map_err(|e| SessionStoreError::Migration {
                     version: 3,
+                    detail: e.to_string(),
+                })?;
+        }
+        if v < 4 {
+            self.conn
+                .execute_batch(SCHEMA_V4_SQL)
+                .map_err(|e| SessionStoreError::Migration {
+                    version: 4,
                     detail: e.to_string(),
                 })?;
         }
@@ -467,6 +513,63 @@ impl Store {
             }),
             None => None,
         })
+    }
+
+    // ---- Outbox (P3-3) ----------------------------------------------------
+    //
+    // The daemon writes a row before encryption; deletes after
+    // the matching `sent` event. On startup, surviving rows are
+    // replayed through the normal command path so a daemon
+    // crash mid-encryption doesn't silently lose the message.
+
+    pub fn enqueue_outbox(&mut self, entry: &OutboxEntry) -> Result<i64, SessionStoreError> {
+        self.conn.execute(
+            "INSERT INTO outbox (kind, peer, device_id, backend, body, request_id, queued_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                entry.kind.as_i64(),
+                entry.peer,
+                entry.device_id,
+                entry.backend.as_i64(),
+                entry.body,
+                entry.request_id,
+                entry.queued_at,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn dequeue_outbox(&mut self, rowid: i64) -> Result<bool, SessionStoreError> {
+        let n = self
+            .conn
+            .execute("DELETE FROM outbox WHERE rowid = ?1", params![rowid])?;
+        Ok(n > 0)
+    }
+
+    pub fn list_outbox(&self) -> Result<Vec<OutboxEntry>, SessionStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rowid, kind, peer, device_id, backend, body, request_id, queued_at
+                 FROM outbox ORDER BY queued_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let kind_i: i64 = r.get(1)?;
+            let backend_i: i64 = r.get(4)?;
+            Ok(OutboxEntry {
+                rowid: Some(r.get(0)?),
+                kind: OutboxKind::from_i64(kind_i).unwrap_or(OutboxKind::Direct),
+                peer: r.get(2)?,
+                device_id: r.get(3)?,
+                backend: Backend::from_i64(backend_i).unwrap_or(Backend::Twomemo),
+                body: r.get(5)?,
+                request_id: r.get(6)?,
+                queued_at: r.get(7)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     // ---- OPK --------------------------------------------------------------
