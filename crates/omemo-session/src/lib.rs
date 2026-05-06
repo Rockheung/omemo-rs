@@ -797,6 +797,34 @@ impl Store {
         Ok(out)
     }
 
+    /// Enumerate every `device_id` we have a session with for
+    /// `(bare_jid, backend)`. Sorted ascending. Empty when we
+    /// haven't bootstrapped any sessions to this peer yet
+    /// (caller's cue to fall back to `fetch_device_list` +
+    /// per-device bootstrap).
+    ///
+    /// Used by the daemon's multi-device fan-out path so a
+    /// single `Send { peer, body, device: None }` can encrypt
+    /// to all of `bare_jid`'s already-bootstrapped devices in
+    /// one go (XEP-0384 §4.6 multi-recipient fan-out).
+    pub fn session_devices(
+        &self,
+        bare_jid: &str,
+        backend: Backend,
+    ) -> Result<Vec<u32>, SessionStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT device_id FROM session WHERE bare_jid = ?1 AND backend = ?2 \
+             ORDER BY device_id",
+        )?;
+        let rows =
+            stmt.query_map(params![bare_jid, backend.as_i64()], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row? as u32);
+        }
+        Ok(out)
+    }
+
     /// Atomically mark `opk_id` consumed and persist `session` for the
     /// given peer device. Used by the omemo-pep KEX-inbound flow when the
     /// caller has already produced the session via `decrypt_inbound_kex`
