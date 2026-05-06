@@ -21,6 +21,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+prometheus-client = "0.22"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "http1"] }
+http-body-util = "0.1"
 
 omemo-pep = { path = "../omemo-pep" }
 omemo-twomemo = { path = "../omemo-twomemo" }

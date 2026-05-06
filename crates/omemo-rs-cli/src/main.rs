@@ -20,6 +20,7 @@
 //! would expose this as a flag and persist explicit user decisions.
 
 mod daemon;
+mod metrics;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -79,6 +80,14 @@ struct Cli {
     /// `$OMEMO_RS_STORE_DIR` or `$HOME/.omemo-rs-cli`.
     #[arg(long, value_name = "DIR", env = "OMEMO_RS_STORE_DIR")]
     store_dir: Option<PathBuf>,
+
+    /// `host:port` for the Prometheus exporter (P3-4). Disabled
+    /// by default. When set, the daemon exposes `/metrics` over
+    /// HTTP on this address.
+    ///
+    /// Example: `--metrics-bind 0.0.0.0:9105`.
+    #[arg(long, value_name = "HOST:PORT", global = true)]
+    metrics_bind: Option<String>,
 
     /// Trust policy applied on first sight of a peer device.
     ///   * `tofu` (default) — auto-trust new devices, log
@@ -183,6 +192,13 @@ async fn main() -> Result<()> {
             device_id,
             opk_count,
         } => {
+            let metrics_bind = match &cli.metrics_bind {
+                Some(s) => Some(
+                    s.parse::<std::net::SocketAddr>()
+                        .with_context(|| format!("parse --metrics-bind {s}"))?,
+                ),
+                None => None,
+            };
             let cfg = daemon::DaemonConfig {
                 bare_jid: bare_jid.clone(),
                 password: cli.password.clone(),
@@ -192,6 +208,7 @@ async fn main() -> Result<()> {
                 device_id_hint: *device_id,
                 opk_count: *opk_count,
                 trust_policy: cli.trust_policy.as_policy(),
+                metrics_bind,
             };
             daemon::run(cfg).await
         }

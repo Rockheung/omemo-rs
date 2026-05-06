@@ -70,6 +70,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
+use crate::metrics::{BackendLabel, DaemonMetrics, ErrorLabel};
+
 const REPLENISH_TARGET: u32 = 100;
 
 // ---------------------------------------------------------------------------
@@ -469,6 +471,9 @@ pub struct DaemonConfig {
     /// outbound `send` to that device fails with PeerPending
     /// until the orchestrator calls `set_trust`.
     pub trust_policy: TrustPolicy,
+    /// Optional Prometheus exporter bind address. When set, the
+    /// daemon serves `/metrics` over HTTP on this address.
+    pub metrics_bind: Option<std::net::SocketAddr>,
 }
 
 pub async fn run(cfg: DaemonConfig) -> Result<()> {
@@ -503,6 +508,15 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
     })
     .await?;
 
+    // P3-4 metrics. Disabled unless `--metrics-bind` is set.
+    let metrics = DaemonMetrics::default();
+    if let Some(bind) = cfg.metrics_bind {
+        if let Err(e) = crate::metrics::serve_metrics(bind, metrics.clone()).await {
+            // Non-fatal: log and continue without metrics.
+            tracing::warn!(error = %e, "metrics server failed to start; continuing without");
+        }
+    }
+
     // Replay any sends a previous daemon process accepted but
     // didn't finish before crashing (P3-3 in-flight outbox).
     // We do this *synchronously* before launching the main
@@ -516,6 +530,7 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
     let pending = store.list_outbox().unwrap_or_default();
     if !pending.is_empty() {
         tracing::info!(count = pending.len(), "replaying outbox entries");
+        metrics.outbox_replays_total.inc_by(pending.len() as u64);
         for entry in pending {
             let rowid = entry.rowid.expect("listed outbox entry must carry rowid");
             let cmd = outbox_entry_to_command(entry);
@@ -528,6 +543,7 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
                 &mut occupants_cache,
                 cmd,
                 Some(rowid),
+                &metrics,
             )
             .await
             {
@@ -537,6 +553,12 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
                     id: None,
                 })
                 .await;
+                metrics
+                    .errors_total
+                    .get_or_create(&ErrorLabel {
+                        kind: "outbox_replay".into(),
+                    })
+                    .inc();
             }
         }
     }
@@ -565,6 +587,7 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
         &mut rooms,
         &mut occupants_cache,
         cfg.trust_policy,
+        &metrics,
     )
     .await;
 
@@ -635,6 +658,7 @@ fn spk_rotation_interval() -> std::time::Duration {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn main_loop(
     own_jid: &BareJid,
     client: &mut Client,
@@ -644,6 +668,7 @@ async fn main_loop(
     rooms: &mut HashMap<BareJid, MucRoom>,
     occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
     trust_policy: TrustPolicy,
+    metrics: &DaemonMetrics,
 ) -> ExitReason {
     let mut bundle_health = tokio::time::interval(BUNDLE_HEALTH_INTERVAL);
     // The first tick fires immediately; we don't need a check
@@ -668,26 +693,33 @@ async fn main_loop(
                         detail: e.to_string(),
                         id: None,
                     }).await;
+                    metrics.errors_total.get_or_create(&ErrorLabel { kind: "bundle_health".into() }).inc();
                 }
+                refresh_gauges(metrics, store, rooms.len());
             },
             _ = spk_rotation.tick() => {
-                if let Err(e) = rotate_and_republish_spk(client, store, own_device_id).await {
-                    let _ = emit(&Event::Error {
-                        kind: "spk_rotation".into(),
-                        detail: e.to_string(),
-                        id: None,
-                    }).await;
+                match rotate_and_republish_spk(client, store, own_device_id).await {
+                    Ok(()) => { metrics.spk_rotations_total.inc(); }
+                    Err(e) => {
+                        let _ = emit(&Event::Error {
+                            kind: "spk_rotation".into(),
+                            detail: e.to_string(),
+                            id: None,
+                        }).await;
+                        metrics.errors_total.get_or_create(&ErrorLabel { kind: "spk_rotation".into() }).inc();
+                    }
                 }
             },
             cmd = cmd_rx.recv() => match cmd {
                 Some(Command::Shutdown) => return ExitReason::Shutdown,
                 Some(cmd) => {
-                    if let Err(e) = handle_command(own_jid, client, store, own_device_id, rooms, occupants_cache, cmd).await {
+                    if let Err(e) = handle_command_inner(own_jid, client, store, own_device_id, rooms, occupants_cache, cmd, None, metrics).await {
                         let _ = emit(&Event::Error {
                             kind: "command".into(),
                             detail: e.to_string(),
                             id: None,
                         }).await;
+                        metrics.errors_total.get_or_create(&ErrorLabel { kind: "command".into() }).inc();
                     }
                 }
                 None => return ExitReason::StdinClosed,
@@ -712,14 +744,15 @@ async fn main_loop(
                                 detail: format!("parse_encrypted_message: {e}"),
                                 id: None,
                             }).await;
+                            metrics.errors_total.get_or_create(&ErrorLabel { kind: "parse".into() }).inc();
                             continue;
                         }
                     };
                     let Some((sender_opt, encrypted_any)) = parsed else { continue };
                     let result = if is_groupchat {
-                        handle_inbound_muc(own_jid, client, store, own_device_id, rooms, &msg, sender_opt.as_ref(), encrypted_any, trust_policy).await
+                        handle_inbound_muc(own_jid, client, store, own_device_id, rooms, &msg, sender_opt.as_ref(), encrypted_any, trust_policy, metrics).await
                     } else {
-                        handle_inbound(own_jid, client, store, own_device_id, sender_opt, encrypted_any, trust_policy).await
+                        handle_inbound(own_jid, client, store, own_device_id, sender_opt, encrypted_any, trust_policy, metrics).await
                     };
                     if let Err(e) = result {
                         // Distinguish IK-drift from other inbound
@@ -737,6 +770,7 @@ async fn main_loop(
                                     stored_fingerprint: stored_hex.clone(),
                                     observed_fingerprint: got_hex.clone(),
                                 }).await;
+                                metrics.ik_drift_total.inc();
                             }
                             _ => {
                                 let _ = emit(&Event::Error {
@@ -744,6 +778,7 @@ async fn main_loop(
                                     detail: e.to_string(),
                                     id: None,
                                 }).await;
+                                metrics.errors_total.get_or_create(&ErrorLabel { kind: "inbound".into() }).inc();
                             }
                         }
                     }
@@ -753,6 +788,22 @@ async fn main_loop(
             }
         }
     }
+}
+
+/// Refresh gauges that need a poll. Called from the
+/// bundle-health tick (≈ once per minute in production), or
+/// after MUC join/leave.
+fn refresh_gauges(metrics: &DaemonMetrics, store: &Store, joined_mucs: usize) {
+    if let Ok(n) = store.count_unconsumed_opks() {
+        metrics.opk_pool_size.set(n as i64);
+    }
+    metrics.joined_mucs.set(joined_mucs as i64);
+    if let Ok(rows) = store.list_outbox() {
+        metrics.outbox_pending.set(rows.len() as i64);
+    }
+    // omemo-session doesn't expose a `count_sessions(backend)`;
+    // we'd need a small addition. Leave active_sessions as 0
+    // for now — the more useful metrics here are the counters.
 }
 
 /// Proactive bundle maintenance — invoked on a timer.
@@ -837,6 +888,7 @@ async fn check_bundle_health(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_inbound(
     own_jid: &BareJid,
     client: &mut Client,
@@ -845,6 +897,7 @@ async fn handle_inbound(
     sender_jid_opt: Option<BareJid>,
     encrypted_any: EncryptedAny,
     trust_policy: TrustPolicy,
+    metrics: &DaemonMetrics,
 ) -> Result<()> {
     let sender_jid =
         sender_jid_opt.ok_or_else(|| anyhow!("inbound message has no `from` JID"))?;
@@ -888,8 +941,9 @@ async fn handle_inbound(
                 timestamp: recovered.timestamp,
             })
             .await?;
+            metrics.received_total.get_or_create(&BackendLabel { backend: "twomemo" }).inc();
             if was_kex {
-                emit_pending_trust_if_needed(store, &sender_jid, sender_device).await;
+                emit_pending_trust_if_needed(store, &sender_jid, sender_device, metrics).await;
             }
         }
         EncryptedAny::Oldmemo(encrypted) => {
@@ -936,8 +990,9 @@ async fn handle_inbound(
                 timestamp: String::new(),
             })
             .await?;
+            metrics.received_total.get_or_create(&BackendLabel { backend: "oldmemo" }).inc();
             if was_kex {
-                emit_pending_trust_if_needed(store, &sender_jid, sender_device).await;
+                emit_pending_trust_if_needed(store, &sender_jid, sender_device, metrics).await;
             }
         }
     }
@@ -1017,6 +1072,7 @@ async fn emit_pending_trust_if_needed(
     store: &Store,
     peer_jid: &BareJid,
     device: u32,
+    metrics: &DaemonMetrics,
 ) {
     let trusted = match store.trusted_device(peer_jid.as_str(), device) {
         Ok(Some(t)) => t,
@@ -1031,6 +1087,7 @@ async fn emit_pending_trust_if_needed(
         ik_fingerprint: hex_encode(&trusted.ik_pub),
     })
     .await;
+    metrics.pending_trust_total.inc();
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,28 +1095,6 @@ async fn emit_pending_trust_if_needed(
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_command(
-    own_jid: &BareJid,
-    client: &mut Client,
-    store: &mut Store,
-    own_device_id: u32,
-    rooms: &mut HashMap<BareJid, MucRoom>,
-    occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
-    cmd: Command,
-) -> Result<()> {
-    handle_command_inner(
-        own_jid,
-        client,
-        store,
-        own_device_id,
-        rooms,
-        occupants_cache,
-        cmd,
-        None,
-    )
-    .await
-}
-
 /// `replay_rowid = Some(_)` means this command came from the
 /// outbox replay path and the row already exists in the store —
 /// skip enqueue, dequeue *that* rowid on success. `None` is the
@@ -1074,6 +1109,7 @@ async fn handle_command_inner(
     occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
     cmd: Command,
     replay_rowid: Option<i64>,
+    metrics: &DaemonMetrics,
 ) -> Result<()> {
     match cmd {
         Command::Send {
@@ -1161,6 +1197,15 @@ async fn handle_command_inner(
                     id: id.clone(),
                 })
                 .await?;
+                metrics
+                    .sent_total
+                    .get_or_create(&BackendLabel {
+                        backend: match backend {
+                            BackendArg::Twomemo => "twomemo",
+                            BackendArg::Oldmemo => "oldmemo",
+                        },
+                    })
+                    .inc();
             }
             // Whole fan-out succeeded → drop the outbox row.
             if let Some(rowid) = outbox_rowid {
@@ -1530,6 +1575,7 @@ async fn handle_presence(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn handle_inbound_muc(
     own_jid: &BareJid,
     _client: &mut Client,
@@ -1540,6 +1586,7 @@ async fn handle_inbound_muc(
     sender_opt: Option<&BareJid>,
     encrypted_any: EncryptedAny,
     trust_policy: TrustPolicy,
+    metrics: &DaemonMetrics,
 ) -> Result<()> {
     let from_full = msg
         .from
@@ -1603,8 +1650,9 @@ async fn handle_inbound_muc(
                 body: recovered.body,
             })
             .await?;
+            metrics.received_total.get_or_create(&BackendLabel { backend: "twomemo" }).inc();
             if was_kex {
-                emit_pending_trust_if_needed(store, &real_bare, sender_device).await;
+                emit_pending_trust_if_needed(store, &real_bare, sender_device, metrics).await;
             }
         }
         EncryptedAny::Oldmemo(_) => {
