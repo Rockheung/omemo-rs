@@ -58,8 +58,8 @@ pub use store::{
     PeerSpec, StoreFlowError, TrustPolicy,
 };
 pub use store_old::{
-    bootstrap_and_save_active_oldmemo, encrypt_to_peer_oldmemo, old_bundle_from_store,
-    receive_first_message_oldmemo, receive_followup_oldmemo,
+    bootstrap_and_save_active_oldmemo, encrypt_to_peer_oldmemo, encrypt_to_peers_oldmemo,
+    old_bundle_from_store, receive_first_message_oldmemo, receive_followup_oldmemo, PeerSpecOld,
 };
 pub use wire::{
     parse_encrypted_message, send_encrypted, send_encrypted_old, wait_for_encrypted,

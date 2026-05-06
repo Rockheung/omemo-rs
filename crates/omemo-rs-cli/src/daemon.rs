@@ -133,17 +133,32 @@ pub enum Command {
     /// Send an OMEMO-encrypted groupchat message to a previously
     /// `join_muc`-ed room. Encrypts once and fans out per device
     /// across every occupant's known devicelist.
+    ///
+    /// `backend` selects the wire format:
+    ///   * `twomemo` (default) — OMEMO 2 / `urn:xmpp:omemo:2`,
+    ///     SCE-wrapped, multi-recipient `<keys>`/`<key rid=…>`.
+    ///   * `oldmemo` — OMEMO 0.3 / `eu.siacs.conversations.axolotl`
+    ///     (Converse.js, Conversations, Gajim). Raw AEAD body, flat
+    ///     `<key rid=…>` list, no envelope.
     SendMuc {
         room: String,
         body: String,
+        #[serde(default)]
+        backend: BackendArg,
         #[serde(default)]
         id: Option<String>,
     },
     /// Re-fetch every occupant's devicelist for a room (e.g. after
     /// you've seen new occupants join). The MVP `join_muc` only
     /// snapshots once at join time.
+    ///
+    /// `backend` selects which devicelist node to query — clients
+    /// often only publish under one of the two. Default is
+    /// `twomemo`; pass `oldmemo` when fanning out to Converse.js.
     RefreshMuc {
         room: String,
+        #[serde(default)]
+        backend: BackendArg,
         #[serde(default)]
         id: Option<String>,
     },
@@ -526,7 +541,11 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
     // would get duplicated by the normal `Send` arm before
     // being dequeued.
     let mut rooms: HashMap<BareJid, MucRoom> = HashMap::new();
-    let mut occupants_cache: HashMap<BareJid, Vec<(BareJid, Vec<u32>)>> = HashMap::new();
+    // Keyed by (room, backend) so a single room can fan out
+    // both an OMEMO 2 message and an OMEMO 0.3 message off
+    // independently-cached devicelists.
+    let mut occupants_cache: HashMap<(BareJid, omemo_pep::Backend), Vec<(BareJid, Vec<u32>)>> =
+        HashMap::new();
     let pending = store.list_outbox().unwrap_or_default();
     if !pending.is_empty() {
         tracing::info!(count = pending.len(), "replaying outbox entries");
@@ -666,7 +685,7 @@ async fn main_loop(
     own_device_id: u32,
     mut cmd_rx: mpsc::Receiver<Command>,
     rooms: &mut HashMap<BareJid, MucRoom>,
-    occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
+    occupants_cache: &mut HashMap<(BareJid, omemo_pep::Backend), Vec<(BareJid, Vec<u32>)>>,
     trust_policy: TrustPolicy,
     metrics: &DaemonMetrics,
 ) -> ExitReason {
@@ -1058,6 +1077,7 @@ fn outbox_entry_to_command(entry: omemo_pep::OutboxEntry) -> Command {
         omemo_pep::OutboxKind::Muc => Command::SendMuc {
             room: entry.peer,
             body: entry.body,
+            backend: backend_arg,
             id: entry.request_id,
         },
     }
@@ -1106,7 +1126,7 @@ async fn handle_command_inner(
     store: &mut Store,
     own_device_id: u32,
     rooms: &mut HashMap<BareJid, MucRoom>,
-    occupants_cache: &mut HashMap<BareJid, Vec<(BareJid, Vec<u32>)>>,
+    occupants_cache: &mut HashMap<(BareJid, omemo_pep::Backend), Vec<(BareJid, Vec<u32>)>>,
     cmd: Command,
     replay_rowid: Option<i64>,
     metrics: &DaemonMetrics,
@@ -1260,7 +1280,11 @@ async fn handle_command_inner(
                 .await
                 .map_err(|e| anyhow!("send_join: {e}"))?;
             rooms.insert(room_jid.clone(), muc);
-            occupants_cache.insert(room_jid, Vec::new());
+            // Two cache slots per room — one per backend. Filled
+            // by `RefreshMuc`. Empty entries are inert; SendMuc
+            // refuses if the slot for its backend is empty.
+            occupants_cache.insert((room_jid.clone(), omemo_pep::Backend::Twomemo), Vec::new());
+            occupants_cache.insert((room_jid, omemo_pep::Backend::Oldmemo), Vec::new());
             emit(&Event::MucJoined {
                 room,
                 occupants: Vec::new(),
@@ -1268,127 +1292,243 @@ async fn handle_command_inner(
             })
             .await?;
         }
-        Command::SendMuc { room, body, id } => {
+        Command::SendMuc {
+            room,
+            body,
+            backend,
+            id,
+        } => {
             let room_jid = BareJid::from_str_strict(&room)?;
             let muc = rooms
                 .get(&room_jid)
                 .ok_or_else(|| anyhow!("not in MUC {room} (run join_muc first)"))?;
+            let pep_backend = match backend {
+                BackendArg::Twomemo => omemo_pep::Backend::Twomemo,
+                BackendArg::Oldmemo => omemo_pep::Backend::Oldmemo,
+            };
             let occupant_devs = occupants_cache
-                .get(&room_jid)
-                .ok_or_else(|| anyhow!("no devicelist cache for {room} (run refresh_muc)"))?
+                .get(&(room_jid.clone(), pep_backend))
+                .ok_or_else(|| anyhow!("no {backend:?} devicelist cache for {room} (run refresh_muc with backend={backend:?})"))?
                 .clone();
-            // Refuse to fan out to zero recipients — the resulting
-            // `<encrypted>` would be a no-op for everyone (no
-            // <key> children) but ejabberd still routes it,
-            // making peers see a malformed message. Better to
-            // surface the misconfig.
             if occupant_devs.iter().all(|(_, devs)| devs.is_empty()) {
                 return Err(anyhow!(
-                    "send_muc: no occupant devicelists cached for {room} — \
-                     issue `refresh_muc` after seeing `muc_occupant_joined` events"
+                    "send_muc: no occupant devicelists cached for {room}/{backend:?} — \
+                     issue `refresh_muc` (with `backend` matching) after seeing `muc_occupant_joined`"
                 ));
             }
 
-            // For each (peer, device): bootstrap if needed and
-            // collect the resulting KexCarrier so the first send
-            // to a brand-new device emits `<key kex='true'>`.
-            // This MVP path is OMEMO 2 only — OMEMO 0.3 MUC
-            // fan-out (Converse.js compat) is on the v3 list.
-            //
-            // PeerSpec borrows the `jid` field as `&str`, so we
-            // stash the JID strings in a stable Vec first and
-            // then immutably borrow into the spec list. This
-            // keeps the borrow checker happy without any unsafe.
-            struct PreSpec {
-                peer_jid: String,
-                device: u32,
-                kex: Option<omemo_pep::KexCarrier>,
-            }
-            let mut prespecs: Vec<PreSpec> = Vec::new();
-            for (peer_jid, device_ids) in &occupant_devs {
-                for &device in device_ids {
-                    let kex = if store
-                        .load_session_snapshot(peer_jid.as_str(), device)
-                        .map_err(|e| anyhow!("load_session: {e}"))?
-                        .is_none()
-                    {
-                        let mut ephemeral_priv = [0u8; 32];
-                        OsRng.fill_bytes(&mut ephemeral_priv);
-                        let bundle = fetch_bundle(client, Some(peer_jid.clone()), device)
-                            .await
-                            .map_err(|e| anyhow!("fetch_bundle({peer_jid}/{device}): {e}"))?;
-                        let opk_id = bundle
-                            .prekeys
-                            .first()
-                            .ok_or_else(|| anyhow!("peer {peer_jid}/{device} bundle has no OPKs"))?
-                            .id;
-                        Some(bootstrap_and_save_active(
-                            store,
-                            peer_jid.as_str(),
-                            device,
-                            &bundle,
-                            opk_id,
-                            ephemeral_priv,
-                            random_priv_provider(32),
-                        )?)
-                    } else {
-                        None
-                    };
-                    prespecs.push(PreSpec {
-                        peer_jid: peer_jid.as_str().to_owned(),
-                        device,
-                        kex,
-                    });
+            match backend {
+                BackendArg::Twomemo => {
+                    struct PreSpec {
+                        peer_jid: String,
+                        device: u32,
+                        kex: Option<omemo_pep::KexCarrier>,
+                    }
+                    let mut prespecs: Vec<PreSpec> = Vec::new();
+                    for (peer_jid, device_ids) in &occupant_devs {
+                        for &device in device_ids {
+                            let kex = if store
+                                .load_session_snapshot(peer_jid.as_str(), device)
+                                .map_err(|e| anyhow!("load_session: {e}"))?
+                                .is_none()
+                            {
+                                let mut ephemeral_priv = [0u8; 32];
+                                OsRng.fill_bytes(&mut ephemeral_priv);
+                                let bundle = fetch_bundle(client, Some(peer_jid.clone()), device)
+                                    .await
+                                    .map_err(|e| {
+                                        anyhow!("fetch_bundle({peer_jid}/{device}): {e}")
+                                    })?;
+                                let opk_id = bundle
+                                    .prekeys
+                                    .first()
+                                    .ok_or_else(|| {
+                                        anyhow!("peer {peer_jid}/{device} bundle has no OPKs")
+                                    })?
+                                    .id;
+                                Some(bootstrap_and_save_active(
+                                    store,
+                                    peer_jid.as_str(),
+                                    device,
+                                    &bundle,
+                                    opk_id,
+                                    ephemeral_priv,
+                                    random_priv_provider(32),
+                                )?)
+                            } else {
+                                None
+                            };
+                            prespecs.push(PreSpec {
+                                peer_jid: peer_jid.as_str().to_owned(),
+                                device,
+                                kex,
+                            });
+                        }
+                    }
+                    let specs: Vec<(
+                        PeerSpec<'_>,
+                        Box<dyn omemo_doubleratchet::dh_ratchet::DhPrivProvider>,
+                    )> = prespecs
+                        .iter()
+                        .map(|p| {
+                            (
+                                PeerSpec {
+                                    jid: p.peer_jid.as_str(),
+                                    device_id: p.device,
+                                    kex: p.kex.clone(),
+                                },
+                                random_priv_provider(16),
+                            )
+                        })
+                        .collect();
+                    let encrypted = encrypt_to_peers(
+                        store,
+                        own_device_id,
+                        room_jid.as_str(),
+                        &body,
+                        specs,
+                    )
+                    .map_err(|e| anyhow!("encrypt_to_peers: {e}"))?;
+                    muc.send_groupchat(client, &encrypted)
+                        .await
+                        .map_err(|e| anyhow!("send_groupchat: {e}"))?;
+                }
+                BackendArg::Oldmemo => {
+                    // OMEMO 0.3 fan-out — Converse.js compat path
+                    // (P3-5). Same per-device bootstrap pattern as
+                    // twomemo, but using `bootstrap_and_save_active_oldmemo`
+                    // + `encrypt_to_peers_oldmemo` and the OMEMO 0.3
+                    // wire encoder (raw AEAD body, no SCE envelope).
+                    struct PreSpecOld {
+                        peer_jid: String,
+                        device: u32,
+                        kex: Option<omemo_pep::KexCarrierOld>,
+                    }
+                    let mut prespecs: Vec<PreSpecOld> = Vec::new();
+                    for (peer_jid, device_ids) in &occupant_devs {
+                        for &device in device_ids {
+                            let kex = if store
+                                .load_oldmemo_session_snapshot(peer_jid.as_str(), device)
+                                .map_err(|e| anyhow!("load_oldmemo_session: {e}"))?
+                                .is_none()
+                            {
+                                let mut ephemeral_priv = [0u8; 32];
+                                OsRng.fill_bytes(&mut ephemeral_priv);
+                                let bundle =
+                                    fetch_old_bundle(client, Some(peer_jid.clone()), device)
+                                        .await
+                                        .map_err(|e| {
+                                            anyhow!("fetch_old_bundle({peer_jid}/{device}): {e}")
+                                        })?;
+                                let opk_id = bundle
+                                    .prekeys
+                                    .first()
+                                    .ok_or_else(|| {
+                                        anyhow!(
+                                            "peer {peer_jid}/{device} oldmemo bundle has no OPKs"
+                                        )
+                                    })?
+                                    .id;
+                                Some(bootstrap_and_save_active_oldmemo(
+                                    store,
+                                    peer_jid.as_str(),
+                                    device,
+                                    &bundle,
+                                    opk_id,
+                                    ephemeral_priv,
+                                    random_priv_provider(32),
+                                )?)
+                            } else {
+                                None
+                            };
+                            prespecs.push(PreSpecOld {
+                                peer_jid: peer_jid.as_str().to_owned(),
+                                device,
+                                kex,
+                            });
+                        }
+                    }
+                    let specs: Vec<(
+                        omemo_pep::PeerSpecOld<'_>,
+                        Box<dyn omemo_doubleratchet::dh_ratchet::DhPrivProvider>,
+                    )> = prespecs
+                        .iter()
+                        .map(|p| {
+                            (
+                                omemo_pep::PeerSpecOld {
+                                    jid: p.peer_jid.as_str(),
+                                    device_id: p.device,
+                                    kex: p.kex.clone(),
+                                },
+                                random_priv_provider(16),
+                            )
+                        })
+                        .collect();
+                    let encrypted = omemo_pep::encrypt_to_peers_oldmemo(
+                        store,
+                        own_device_id,
+                        &body,
+                        specs,
+                    )
+                    .map_err(|e| anyhow!("encrypt_to_peers_oldmemo: {e}"))?;
+                    // Wrap into a groupchat <message>. There's no
+                    // dedicated `send_old_groupchat` on MucRoom yet —
+                    // we send via the underlying tokio_xmpp client
+                    // with type=groupchat to the room's bare JID.
+                    let xml = encrypted
+                        .encode()
+                        .map_err(|e| anyhow!("encode old encrypted: {e}"))?;
+                    let elem = <xmpp_parsers::minidom::Element as std::str::FromStr>::from_str(&xml)
+                        .map_err(|e| anyhow!("parse old encrypted: {e}"))?;
+                    let msg = xmpp_parsers::message::Message::groupchat(Some(
+                        xmpp_parsers::jid::Jid::from(room_jid.clone()),
+                    ))
+                    .with_payloads(vec![elem]);
+                    client
+                        .send_stanza(msg.into())
+                        .await
+                        .map_err(|e| anyhow!("send groupchat (oldmemo): {e}"))?;
                 }
             }
-            let specs: Vec<(PeerSpec<'_>, Box<dyn omemo_doubleratchet::dh_ratchet::DhPrivProvider>)> =
-                prespecs
-                    .iter()
-                    .map(|p| {
-                        (
-                            PeerSpec {
-                                jid: p.peer_jid.as_str(),
-                                device_id: p.device,
-                                kex: p.kex.clone(),
-                            },
-                            random_priv_provider(16),
-                        )
-                    })
-                    .collect();
-            let encrypted = encrypt_to_peers(
-                store,
-                own_device_id,
-                room_jid.as_str(),
-                &body,
-                specs,
-            )
-            .map_err(|e| anyhow!("encrypt_to_peers: {e}"))?;
-            muc.send_groupchat(client, &encrypted)
-                .await
-                .map_err(|e| anyhow!("send_groupchat: {e}"))?;
             emit(&Event::Sent {
                 peer: room.clone(),
                 device: 0,
-                backend: BackendArg::Twomemo,
+                backend,
                 id,
             })
             .await?;
-            // Note: emitting `sent` with peer=room and device=0 is
-            // a slight overload of the 1:1 event shape — could be
-            // a separate `muc_sent` event. Kept compact for now.
+            metrics
+                .sent_total
+                .get_or_create(&BackendLabel {
+                    backend: match backend {
+                        BackendArg::Twomemo => "twomemo",
+                        BackendArg::Oldmemo => "oldmemo",
+                    },
+                })
+                .inc();
             let _ = room;
         }
-        Command::RefreshMuc { room, id } => {
+        Command::RefreshMuc { room, backend, id } => {
             let room_jid = BareJid::from_str_strict(&room)?;
             let muc = rooms
                 .get(&room_jid)
                 .ok_or_else(|| anyhow!("not in MUC {room}"))?;
-            let occupant_devs = muc
-                .refresh_device_lists(client, store)
-                .await
-                .map_err(|e| anyhow!("refresh_device_lists: {e}"))?;
+            let pep_backend = match backend {
+                BackendArg::Twomemo => omemo_pep::Backend::Twomemo,
+                BackendArg::Oldmemo => omemo_pep::Backend::Oldmemo,
+            };
+            let occupant_devs = match backend {
+                BackendArg::Twomemo => muc
+                    .refresh_device_lists(client, store)
+                    .await
+                    .map_err(|e| anyhow!("refresh_device_lists: {e}"))?,
+                BackendArg::Oldmemo => muc
+                    .refresh_old_device_lists(client, store)
+                    .await
+                    .map_err(|e| anyhow!("refresh_old_device_lists: {e}"))?,
+            };
             let infos = occupant_infos(muc, &occupant_devs);
-            occupants_cache.insert(room_jid, occupant_devs);
+            occupants_cache.insert((room_jid, pep_backend), occupant_devs);
             emit(&Event::MucRefreshed {
                 room,
                 occupants: infos,
@@ -1401,7 +1541,8 @@ async fn handle_command_inner(
             if let Some(muc) = rooms.remove(&room_jid) {
                 let _ = muc.send_leave(client).await;
             }
-            occupants_cache.remove(&room_jid);
+            occupants_cache.remove(&(room_jid.clone(), omemo_pep::Backend::Twomemo));
+            occupants_cache.remove(&(room_jid, omemo_pep::Backend::Oldmemo));
             emit(&Event::MucLeft { room, id }).await?;
         }
         Command::Status { id } => {
@@ -1655,8 +1796,56 @@ async fn handle_inbound_muc(
                 emit_pending_trust_if_needed(store, &real_bare, sender_device, metrics).await;
             }
         }
-        EncryptedAny::Oldmemo(_) => {
-            return Err(anyhow!("groupchat OMEMO 0.3 inbound not supported in v2"));
+        EncryptedAny::Oldmemo(encrypted) => {
+            // OMEMO 0.3 MUC inbound (P3-5). Same flow as 1:1 but
+            // `envelope_to` is the room's bare JID (we ignore it
+            // for oldmemo since there's no SCE envelope wrapper).
+            let sender_device = encrypted.sid;
+            let kind = inbound_kind_oldmemo(&encrypted, own_device_id)
+                .context("classify groupchat inbound (oldmemo)")?;
+            let was_kex = matches!(kind, InboundOldKind::Kex);
+            let body_bytes = match kind {
+                InboundOldKind::Kex => {
+                    let bundle =
+                        fetch_old_bundle(_client, Some(real_bare.clone()), sender_device)
+                            .await
+                            .context("fetch sender oldmemo bundle for IK")?;
+                    receive_first_message_oldmemo(
+                        store,
+                        &encrypted,
+                        own_device_id,
+                        real_bare.as_str(),
+                        sender_device,
+                        bundle.identity_key_ed,
+                        trust_policy,
+                        random_priv_provider(16),
+                    )?
+                }
+                InboundOldKind::Follow => receive_followup_oldmemo(
+                    store,
+                    &encrypted,
+                    own_device_id,
+                    real_bare.as_str(),
+                    sender_device,
+                    random_priv_provider(16),
+                )?,
+            };
+            let _ = replenish_opks(store, REPLENISH_TARGET, &mut OsRng);
+            let body = String::from_utf8(body_bytes)
+                .map_err(|e| anyhow!("oldmemo body not UTF-8: {e}"))?;
+            emit(&Event::MucMessage {
+                room: room_bare.to_string(),
+                from_real_jid: real_bare.to_string(),
+                from_nick: nick,
+                device: sender_device,
+                backend: BackendArg::Oldmemo,
+                body,
+            })
+            .await?;
+            metrics.received_total.get_or_create(&BackendLabel { backend: "oldmemo" }).inc();
+            if was_kex {
+                emit_pending_trust_if_needed(store, &real_bare, sender_device, metrics).await;
+            }
         }
     }
     Ok(())

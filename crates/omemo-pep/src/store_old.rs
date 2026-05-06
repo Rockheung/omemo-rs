@@ -128,6 +128,74 @@ pub fn encrypt_to_peer_oldmemo(
     Ok(encrypted)
 }
 
+/// One recipient device for an OMEMO 0.3 multi-recipient
+/// `encrypt_to_peers_oldmemo` call. Mirrors
+/// [`crate::PeerSpec`] but using `KexCarrierOld`.
+pub struct PeerSpecOld<'a> {
+    pub jid: &'a str,
+    pub device_id: u32,
+    pub kex: Option<KexCarrierOld>,
+}
+
+/// Encrypt `body_text` for *every* peer device in `peers` using
+/// the OMEMO 0.3 wire format, sealing one AEAD payload + emitting
+/// one `<key rid=>` per device — the exact structure Converse.js
+/// produces and consumes for groupchat. The `<keys jid=>` grouping
+/// in OMEMO 0.3 is per-occupant; the wire encoder (`encrypt_message_oldmemo`)
+/// already takes a flat `RecipientOld` list and lets the caller
+/// produce one `<keys>` element per JID downstream.
+///
+/// Unlike OMEMO 2 (XEP-0420 SCE envelope), OMEMO 0.3 puts
+/// `body_text` straight onto the wire as raw bytes encrypted by
+/// AES-128-GCM — no envelope wrapping.
+///
+/// Refuses any `Untrusted` peer device — same gate as
+/// [`encrypt_to_peer_oldmemo`].
+#[allow(clippy::type_complexity)]
+pub fn encrypt_to_peers_oldmemo(
+    store: &mut Store,
+    own_device_id: u32,
+    body_text: &str,
+    peers: Vec<(PeerSpecOld<'_>, Box<dyn DhPrivProvider>)>,
+) -> Result<OldEncrypted, StoreFlowError> {
+    for (peer, _) in &peers {
+        refuse_if_untrusted(store, peer.jid, peer.device_id)?;
+    }
+
+    let mut sessions: Vec<OldmemoSession> = Vec::with_capacity(peers.len());
+    let mut peer_keys: Vec<(String, u32, Option<KexCarrierOld>)> = Vec::with_capacity(peers.len());
+    for (peer, provider) in peers {
+        let snap = store
+            .load_oldmemo_session_snapshot(peer.jid, peer.device_id)?
+            .ok_or_else(|| StoreFlowError::SessionMissing {
+                jid: peer.jid.to_owned(),
+                device_id: peer.device_id,
+            })?;
+        sessions.push(OldmemoSession::from_snapshot(snap, provider));
+        peer_keys.push((peer.jid.to_owned(), peer.device_id, peer.kex));
+    }
+
+    let encrypted = {
+        let mut recipients: Vec<RecipientOld> = peer_keys
+            .iter()
+            .zip(sessions.iter_mut())
+            .map(|((_, device_id, kex), s)| RecipientOld {
+                device_id: *device_id,
+                session: s,
+                kex: kex.clone(),
+            })
+            .collect();
+        encrypt_message_oldmemo(own_device_id, &mut recipients, body_text.as_bytes())
+            .map_err(|e| StoreFlowError::Pep(format!("encrypt_old: {e}")))?
+    };
+
+    for ((jid, device_id, _), sess) in peer_keys.iter().zip(sessions.iter()) {
+        store.save_oldmemo_session(jid, *device_id, sess)?;
+    }
+
+    Ok(encrypted)
+}
+
 /// KEX-tagged inbound for OMEMO 0.3 (`<key prekey="true">`).
 ///
 /// `peer_ik_pub_ed` is the Ed25519 form of the sender's identity key

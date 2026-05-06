@@ -282,6 +282,55 @@ impl MucRoom {
         Ok(out)
     }
 
+    /// OMEMO 0.3 mirror of [`refresh_device_lists`] — Converse.js
+    /// publishes its devicelist under `eu.siacs.conversations.axolotl.devicelist`
+    /// and most clients won't dual-publish to the OMEMO 2 node.
+    /// Use this when fanning out groupchat with the oldmemo backend.
+    /// Same semantics as the OMEMO 2 path: anonymous-room occupants
+    /// (no real JID) and peers with an empty oldmemo PEP node are
+    /// skipped silently; only network-level failures bubble.
+    pub async fn refresh_old_device_lists(
+        &self,
+        client: &mut Client,
+        store: &mut omemo_session::Store,
+    ) -> Result<Vec<(BareJid, Vec<u32>)>, MucError> {
+        let our_jid = store
+            .get_identity()
+            .map_err(MucError::Store)?
+            .map(|i| i.bare_jid);
+
+        let mut targets: Vec<(String, BareJid)> = self
+            .occupants
+            .values()
+            .filter_map(|o| o.real_jid.as_ref().map(|j| (o.nick.clone(), j.clone())))
+            .collect();
+        targets.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        let mut out = Vec::with_capacity(targets.len());
+        for (_nick, jid) in targets {
+            if our_jid.as_deref() == Some(jid.as_str()) {
+                continue;
+            }
+            let list = match crate::pep::fetch_old_device_list(client, Some(jid.clone())).await {
+                Ok(l) => l,
+                Err(crate::pep::PepError::ServerError(_))
+                | Err(crate::pep::PepError::NoPayload)
+                | Err(crate::pep::PepError::NoDeviceList) => continue,
+                Err(other) => {
+                    return Err(MucError::Pep {
+                        jid: jid.as_str().to_owned(),
+                        source: other,
+                    });
+                }
+            };
+            for device_id in &list.devices {
+                store.upsert_device(jid.as_str(), *device_id, None)?;
+            }
+            out.push((jid, list.devices));
+        }
+        Ok(out)
+    }
+
     /// Update room state from one inbound `<presence>` stanza.
     ///
     /// Returns the classified [`MucEvent`]. Stanzas whose `from` is not
