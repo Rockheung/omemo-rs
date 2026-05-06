@@ -582,6 +582,23 @@ const BUNDLE_HEALTH_INTERVAL: std::time::Duration = std::time::Duration::from_se
 /// pool faster than the timer ticks.
 const OPK_REFILL_THRESHOLD: u32 = 50;
 
+/// SPK rotation cadence (XEP-0384 §5.3.2): rotate every ≥ 7 days.
+/// Driven by the daemon's tick loop alongside bundle health.
+/// Overridable per-process via `OMEMO_RS_SPK_ROTATION_SECS`
+/// (integration tests set this to a few seconds).
+const DEFAULT_SPK_ROTATION_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 3600);
+
+fn spk_rotation_interval() -> std::time::Duration {
+    match std::env::var("OMEMO_RS_SPK_ROTATION_SECS") {
+        Ok(v) => match v.parse::<u64>() {
+            Ok(n) if n >= 1 => std::time::Duration::from_secs(n),
+            _ => DEFAULT_SPK_ROTATION_INTERVAL,
+        },
+        Err(_) => DEFAULT_SPK_ROTATION_INTERVAL,
+    }
+}
+
 async fn main_loop(
     own_jid: &BareJid,
     client: &mut Client,
@@ -599,12 +616,28 @@ async fn main_loop(
     bundle_health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let _ = bundle_health.tick().await;
 
+    let mut spk_rotation = tokio::time::interval(spk_rotation_interval());
+    spk_rotation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Same first-tick-fires-immediately concern: identity-publish
+    // already wrote a fresh SPK, no need to rotate the moment we
+    // start.
+    let _ = spk_rotation.tick().await;
+
     loop {
         tokio::select! {
             _ = bundle_health.tick() => {
                 if let Err(e) = check_bundle_health(client, store, own_device_id).await {
                     let _ = emit(&Event::Error {
                         kind: "bundle_health".into(),
+                        detail: e.to_string(),
+                        id: None,
+                    }).await;
+                }
+            },
+            _ = spk_rotation.tick() => {
+                if let Err(e) = rotate_and_republish_spk(client, store, own_device_id).await {
+                    let _ = emit(&Event::Error {
+                        kind: "spk_rotation".into(),
                         detail: e.to_string(),
                         id: None,
                     }).await;
@@ -700,6 +733,42 @@ async fn main_loop(
 /// faster than the publish-republish RTT. Then the next peer's
 /// bundle fetch hits an empty `<prekeys>` and X3DH passive
 /// fails. The 60s timer caps the worst-case window.
+/// Mint a fresh signed prekey, mark the previous one as
+/// replaced, and publish the new bundle to PEP. Old SPK rows
+/// stay in the store so peers that bootstrapped against the
+/// previous `spk_id` can still finish their KEX (the bundle's
+/// "current" pointer just moves forward).
+///
+/// Republishes both OMEMO 2 and OMEMO 0.3 bundles so dual-stack
+/// peers all see the new public halves.
+async fn rotate_and_republish_spk(
+    client: &mut Client,
+    store: &mut Store,
+    own_device_id: u32,
+) -> anyhow::Result<()> {
+    let mut spk_priv = [0u8; 32];
+    let mut sig_nonce = [0u8; 64];
+    OsRng.fill_bytes(&mut spk_priv);
+    OsRng.fill_bytes(&mut sig_nonce);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let new_spk = store
+        .rotate_spk(spk_priv, sig_nonce, now)
+        .map_err(|e| anyhow::anyhow!("rotate_spk: {e}"))?;
+    tracing::info!(spk_id = new_spk.id, "SPK rotated; republishing bundle");
+    publish_my_bundle(store, client, own_device_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("publish_my_bundle: {e}"))?;
+    let old_bundle = omemo_pep::old_bundle_from_store(store)
+        .map_err(|e| anyhow::anyhow!("old_bundle_from_store: {e}"))?;
+    publish_old_bundle(client, own_device_id, &old_bundle)
+        .await
+        .map_err(|e| anyhow::anyhow!("publish_old_bundle: {e}"))?;
+    Ok(())
+}
+
 async fn check_bundle_health(
     client: &mut Client,
     store: &mut Store,

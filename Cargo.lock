@@ -1400,6 +1400,7 @@ dependencies = [
  "futures-util",
  "omemo-doubleratchet",
  "omemo-pep",
+ "omemo-session",
  "omemo-twomemo",
  "rand_core 0.6.4",
  "serde",

@@ -29,3 +29,4 @@ omemo-doubleratchet = { path = "../omemo-doubleratchet" }
 [dev-dependencies]
 tempfile = "3"
 serde_json = { workspace = true }
+omemo-session = { path = "../omemo-session" }

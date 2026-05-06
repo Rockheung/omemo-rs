@@ -376,6 +376,64 @@ impl Store {
         })
     }
 
+    /// Rotate the signed prekey: marks every currently-active row
+    /// (`replaced_at IS NULL`) as replaced at `now`, mints a new
+    /// SPK signed with the stored identity key seed, and inserts
+    /// it. The old rows stay in the table so in-flight KEX
+    /// messages still referencing the old `spk_id` can decrypt
+    /// (the bundle's "current" pointer just moves forward — the
+    /// old keys aren't deleted until they're aged out).
+    ///
+    /// Caller supplies the random bytes (`spk_priv` + 64-byte
+    /// XEdDSA `sig_nonce`); `omemo-session` itself stays
+    /// rand-free so this method is deterministic and easy to
+    /// test. Production callers should fill them with `OsRng`;
+    /// fixtures supply recorded values.
+    ///
+    /// XEP-0384 §5.3.2 calls for ≥ 7-day rotation cadence; the
+    /// timer lives in the daemon, not here.
+    pub fn rotate_spk(
+        &mut self,
+        spk_priv: [u8; 32],
+        sig_nonce: [u8; 64],
+        now: i64,
+    ) -> Result<StoredSpk, SessionStoreError> {
+        let identity = self.get_identity()?.ok_or(SessionStoreError::Migration {
+            version: 1,
+            detail: "rotate_spk requires an installed identity".into(),
+        })?;
+        let ik = omemo_x3dh::IdentityKeyPair::Seed(identity.ik_seed);
+
+        // Mark every active SPK as replaced — there should be at
+        // most one, but the schema doesn't enforce that.
+        self.conn.execute(
+            "UPDATE signed_prekey SET replaced_at = ?1 WHERE replaced_at IS NULL",
+            params![now],
+        )?;
+
+        // Pick the next id deterministically — max(existing) + 1.
+        // Wraps to 1 on first call against a fresh store (max =
+        // NULL in SQL, COALESCE picks 0).
+        let next_id: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM signed_prekey",
+            [],
+            |r| r.get(0),
+        )?;
+        let new_id = next_id as u32;
+
+        let pair = omemo_x3dh::SignedPreKeyPair::create(&ik, spk_priv, sig_nonce, now as u64);
+        let spk = StoredSpk {
+            id: new_id,
+            priv_key: pair.priv_key,
+            pub_key: pair.pub_key(),
+            sig: pair.sig,
+            created_at: now,
+            replaced_at: None,
+        };
+        self.put_spk(&spk)?;
+        Ok(spk)
+    }
+
     /// The most recently created SPK with `replaced_at IS NULL`.
     pub fn current_spk(&self) -> Result<Option<StoredSpk>, SessionStoreError> {
         let row = self
