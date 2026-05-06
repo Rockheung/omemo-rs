@@ -42,7 +42,14 @@
 //! reconnect on network blips is Phase 3 (production polish).
 
 use std::path::Path;
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+/// Daemon-wide start instant — set once on `Event::Ready`,
+/// read by `Command::Status` to compute uptime. OnceLock so
+/// the value is available from anywhere in the file without
+/// threading it through every handler signature.
+static STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
@@ -338,12 +345,32 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
-    /// Result of a `status` command.
+    /// Result of a `status` command. Beefed up in v3 with
+    /// fields useful for orchestrator health probes.
     Status {
         jid: String,
         device_id: u32,
-        twomemo_sessions: usize,
-        oldmemo_sessions: usize,
+        /// Total session rows by backend.
+        twomemo_sessions: u64,
+        oldmemo_sessions: u64,
+        /// Number of unconsumed OPKs in the local pool. The
+        /// daemon's bundle-health timer auto-refills below
+        /// `OPK_REFILL_THRESHOLD` (50), but this lets the
+        /// orchestrator alert proactively if e.g. it's been
+        /// 0 for several status calls.
+        opk_pool_size: u32,
+        /// Number of MUC rooms the daemon is currently joined
+        /// in (`join_muc` issued, no `leave_muc`).
+        joined_muc_count: usize,
+        /// Daemon process uptime in seconds since `Ready`.
+        uptime_secs: u64,
+        /// Coarse connection state. Today the daemon is in the
+        /// `main_loop` for the entire lifetime between Ready
+        /// and Goodbye, so this is always `"online"` whenever
+        /// a Status event fires; future `--reconnect` work
+        /// (XEP-0198 stream resumption) will populate the
+        /// `"reconnecting"` variant too.
+        connection_state: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
@@ -463,6 +490,7 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
     announce_presence(&mut client).await?;
     publish_identity(&mut client, &store, device_id).await?;
 
+    let _ = STARTED_AT.set(Instant::now());
     emit(&Event::Ready {
         jid: cfg.bare_jid.to_string(),
         device_id,
@@ -1078,15 +1106,28 @@ async fn handle_command(
             emit(&Event::MucLeft { room, id }).await?;
         }
         Command::Status { id } => {
-            // Session counts would need a `Store::list_sessions`
-            // accessor that doesn't exist yet — return -1 sentinels
-            // for the v1 protocol so the field shape stays stable
-            // for orchestrators that already parse them.
+            let twomemo_sessions = store
+                .session_count(omemo_pep::Backend::Twomemo)
+                .map_err(|e| anyhow!("session_count(twomemo): {e}"))?;
+            let oldmemo_sessions = store
+                .session_count(omemo_pep::Backend::Oldmemo)
+                .map_err(|e| anyhow!("session_count(oldmemo): {e}"))?;
+            let opk_pool_size = store
+                .count_unconsumed_opks()
+                .map_err(|e| anyhow!("count_unconsumed_opks: {e}"))?;
+            let uptime_secs = STARTED_AT
+                .get()
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
             emit(&Event::Status {
                 jid: own_jid.to_string(),
                 device_id: own_device_id,
-                twomemo_sessions: usize::MAX,
-                oldmemo_sessions: usize::MAX,
+                twomemo_sessions,
+                oldmemo_sessions,
+                opk_pool_size,
+                joined_muc_count: rooms.len(),
+                uptime_secs,
+                connection_state: "online",
                 id,
             })
             .await?;

@@ -898,6 +898,19 @@ impl Store {
         Ok(out)
     }
 
+    /// Total number of `(bare_jid, device_id)` sessions we
+    /// hold for `backend`, across all peers. Used by the
+    /// daemon's `status` event to surface a cheap "how many
+    /// peers am I talking to" gauge.
+    pub fn session_count(&self, backend: Backend) -> Result<u64, SessionStoreError> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM session WHERE backend = ?1",
+            params![backend.as_i64()],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
     /// Atomically mark `opk_id` consumed and persist `session` for the
     /// given peer device. Used by the omemo-pep KEX-inbound flow when the
     /// caller has already produced the session via `decrypt_inbound_kex`
