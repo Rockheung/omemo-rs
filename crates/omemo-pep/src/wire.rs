@@ -11,10 +11,13 @@ use futures_util::StreamExt;
 use jid::{BareJid, Jid};
 use omemo_stanza::axolotl_stanza::{Encrypted as OldEncrypted, NS as OMEMO_OLD_NS};
 use omemo_stanza::Encrypted;
+use omemo_westron::SignedCaps;
 use thiserror::Error;
 use tokio_xmpp::{Client, Event, Stanza};
 use xmpp_parsers::message::Message as XmppMessage;
 use xmpp_parsers::minidom::Element;
+
+use crate::westron::{encode_signed_caps_payload, parse_signed_caps_payload, SIGNED_CAPS_NS};
 
 const OMEMO2_NS: &str = "urn:xmpp:omemo:2";
 const ENCRYPTED_ELEM: &str = "encrypted";
@@ -70,6 +73,68 @@ pub async fn send_encrypted_old(
     let msg = XmppMessage::chat(Some(Jid::from(to))).with_payloads(vec![elem]);
     client.send_stanza(msg.into()).await?;
     Ok(())
+}
+
+/// Variant of [`send_encrypted`] that rides a Westron signed-caps
+/// element alongside the OMEMO 2 `<encrypted>` payload. SPEC §4.3 — a
+/// Westron-aware peer can use this to drive
+/// [`crate::InboundSpecLocks::renegotiate`] without waiting for the
+/// peer's own publish cycle.
+///
+/// `caps.sid` should equal `encrypted.sid` (the receiver verifies sid
+/// rebinding); call [`crate::caps_for_self`] to produce the caps with
+/// the correct sid for the bot's own identity.
+pub async fn send_encrypted_with_caps(
+    client: &mut Client,
+    to: BareJid,
+    encrypted: &Encrypted,
+    caps: &SignedCaps,
+) -> Result<(), WireError> {
+    let xml_enc = encrypted.encode().map_err(WireError::Encode)?;
+    let elem_enc = Element::from_str(&xml_enc).map_err(|e| WireError::Minidom(e.to_string()))?;
+    let xml_caps = encode_signed_caps_payload(caps);
+    let elem_caps =
+        Element::from_str(&xml_caps).map_err(|e| WireError::Minidom(e.to_string()))?;
+    let msg = XmppMessage::chat(Some(Jid::from(to))).with_payloads(vec![elem_enc, elem_caps]);
+    client.send_stanza(msg.into()).await?;
+    Ok(())
+}
+
+/// OMEMO 0.3 mirror of [`send_encrypted_with_caps`]. Legacy 0.3-only
+/// clients drop the unknown `<caps>` payload silently; Westron-aware
+/// clients can use it to upgrade the session.
+pub async fn send_encrypted_old_with_caps(
+    client: &mut Client,
+    to: BareJid,
+    encrypted: &OldEncrypted,
+    caps: &SignedCaps,
+) -> Result<(), WireError> {
+    let xml_enc = encrypted.encode().map_err(WireError::Encode)?;
+    let elem_enc = Element::from_str(&xml_enc).map_err(|e| WireError::Minidom(e.to_string()))?;
+    let xml_caps = encode_signed_caps_payload(caps);
+    let elem_caps =
+        Element::from_str(&xml_caps).map_err(|e| WireError::Minidom(e.to_string()))?;
+    let msg = XmppMessage::chat(Some(Jid::from(to))).with_payloads(vec![elem_enc, elem_caps]);
+    client.send_stanza(msg.into()).await?;
+    Ok(())
+}
+
+/// Pluck a signed-caps sibling payload out of `msg` if present.
+/// Returns the *unverified* `SignedCaps`; the caller MUST call
+/// [`SignedCaps::verify`] under the peer's `IK_ed` before honoring it.
+///
+/// Mirror of [`parse_encrypted_message`] — both look for siblings of
+/// `<message>` payloads, neither consumes a stanza off the stream.
+pub fn parse_signed_caps_sibling(msg: &XmppMessage) -> Result<Option<SignedCaps>, WireError> {
+    for p in &msg.payloads {
+        if p.name() == "caps" && p.ns() == SIGNED_CAPS_NS {
+            let xml = String::from(p);
+            let caps =
+                parse_signed_caps_payload(&xml).map_err(|e| WireError::Minidom(e.to_string()))?;
+            return Ok(Some(caps));
+        }
+    }
+    Ok(None)
 }
 
 /// Drive `client` until a `<message>` with an `<encrypted xmlns=

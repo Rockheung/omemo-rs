@@ -28,12 +28,14 @@ pub use omemo_stanza::{
 pub use omemo_session::Backend;
 pub use tokio_xmpp::{connect::DnsConfig, xmlstream::Timeouts, Client, Event, Stanza};
 
+mod dispatch;
 mod message;
 mod message_old;
 mod muc;
 mod pep;
 mod store;
 mod store_old;
+mod westron;
 mod wire;
 
 pub use message::{
@@ -61,8 +63,18 @@ pub use store_old::{
     bootstrap_and_save_active_oldmemo, encrypt_to_peer_oldmemo, encrypt_to_peers_oldmemo,
     old_bundle_from_store, receive_first_message_oldmemo, receive_followup_oldmemo, PeerSpecOld,
 };
+pub use dispatch::{spec_of, DispatchError, InboundSpecLocks};
+pub use omemo_westron::caps::{Caps, NegotiationError, Spec};
+pub use omemo_westron::transcode::{Recipient as WestronRecipient, SendPlan};
+pub use omemo_westron::{CapsError, SignedCaps, CAPS_MAX_SKEW_SECS};
+pub use westron::{
+    caps_for_self, default_self_caps, encode_signed_caps_payload, parse_signed_caps_payload,
+    plan_outbound_wire, publish_my_dual_bundles, sign_caps, verify_peer_dual_bundle,
+    westron_identity, SIGNED_CAPS_NS,
+};
 pub use wire::{
-    parse_encrypted_message, send_encrypted, send_encrypted_old, wait_for_encrypted,
+    parse_encrypted_message, parse_signed_caps_sibling, send_encrypted, send_encrypted_old,
+    send_encrypted_old_with_caps, send_encrypted_with_caps, wait_for_encrypted,
     wait_for_encrypted_any, EncryptedAny, WireError,
 };
 

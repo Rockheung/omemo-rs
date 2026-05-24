@@ -23,6 +23,7 @@ omemo-doubleratchet = { path = "../omemo-doubleratchet" }
 omemo-x3dh = { path = "../omemo-x3dh" }
 omemo-xeddsa = { path = "../omemo-xeddsa" }
 omemo-session = { path = "../omemo-session" }
+omemo-westron = { path = "../omemo-westron" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

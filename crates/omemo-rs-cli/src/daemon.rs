@@ -74,14 +74,17 @@ use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use omemo_doubleratchet::dh_ratchet::DhPrivProvider;
 use omemo_pep::{
-    bootstrap_and_save_active, bootstrap_and_save_active_oldmemo, encrypt_to_peer,
-    encrypt_to_peer_oldmemo, encrypt_to_peers, fetch_bundle, fetch_device_list, fetch_old_bundle,
-    fetch_old_device_list, inbound_kind, inbound_kind_oldmemo, install_identity_random,
-    parse_encrypted_message, publish_device_list, publish_my_bundle, publish_old_bundle,
+    bootstrap_and_save_active, bootstrap_and_save_active_oldmemo, caps_for_self,
+    default_self_caps, encrypt_to_peer, encrypt_to_peer_oldmemo, encrypt_to_peers, fetch_bundle,
+    fetch_device_list, fetch_old_bundle, fetch_old_device_list, inbound_kind,
+    inbound_kind_oldmemo, install_identity_random, parse_encrypted_message,
+    parse_signed_caps_sibling, publish_device_list, publish_my_bundle, publish_old_bundle,
     publish_old_device_list, receive_first_message, receive_first_message_oldmemo,
     receive_followup, receive_followup_oldmemo, replenish_opks, send_encrypted,
-    send_encrypted_old, BareJid, Client, Device, DeviceList, EncryptedAny, Event as XmppEvent,
-    InboundKind, InboundOldKind, MucRoom, OldDeviceList, PeerSpec, Stanza, Store, TrustPolicy,
+    send_encrypted_old, send_encrypted_old_with_caps, send_encrypted_with_caps, BareJid, Caps,
+    Client, Device, DeviceList, DispatchError, EncryptedAny, Event as XmppEvent, InboundKind,
+    InboundOldKind, InboundSpecLocks, MucRoom, OldDeviceList, PeerSpec, SignedCaps, Spec, Stanza,
+    Store, TrustPolicy,
 };
 use std::collections::HashMap;
 use rand_core::{OsRng, RngCore};
@@ -274,11 +277,16 @@ impl TrustStateArg {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendArg {
-    /// OMEMO 2 (`urn:xmpp:omemo:2`). Default.
+    /// Daemon picks the wire spec based on the peer's prior inbound
+    /// (`InboundSpecLocks`); falls back to probing both PEP
+    /// devicelists when nothing is locked. Default — callers that
+    /// don't care which spec leaves the wire should leave this unset.
     #[default]
+    Auto,
+    /// OMEMO 2 (`urn:xmpp:omemo:2`).
     Twomemo,
     /// OMEMO 0.3 (`eu.siacs.conversations.axolotl`).
     Oldmemo,
@@ -468,6 +476,38 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+    /// SPEC §7.3 — a peer-device sent us a payload in a *lower-priority*
+    /// OMEMO spec than we previously locked it to. The inbound was
+    /// dropped without decryption (an active downgrade attacker could
+    /// be coercing us off OMEMO 2 / Westron back to OMEMO 0.3). The
+    /// orchestrator should treat this as a security signal — surface it
+    /// to the operator and consider rotating the peer's trust state.
+    SpecDowngradeBlocked {
+        peer: String,
+        device: u32,
+        /// Spec we previously locked to for this peer-device.
+        locked: String,
+        /// Spec the dropped payload arrived in.
+        observed: String,
+    },
+    /// SPEC §7.2 — a verified `<caps>` sibling element from `peer/device`
+    /// caused us to renegotiate the spec lock. Informational; the next
+    /// inbound from this device is expected in `spec`.
+    SpecRenegotiated {
+        peer: String,
+        device: u32,
+        spec: String,
+    },
+    /// A `<caps>` sibling element accompanied an inbound payload but
+    /// failed signature verification (or sid binding / freshness). The
+    /// underlying `<encrypted>` payload is still processed — the caps
+    /// element is purely advisory — but the orchestrator may want to
+    /// log this for active-attack detection.
+    CapsVerifyFailed {
+        peer: String,
+        device: u32,
+        detail: String,
+    },
     /// XMPP stream ended (server side closed, network error, etc.).
     /// The daemon will exit shortly after this.
     Disconnected { reason: String },
@@ -575,6 +615,10 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
     let mut occupants_cache: HashMap<(BareJid, omemo_pep::Backend), Vec<(BareJid, Vec<u32>)>> =
         HashMap::new();
     let pending = store.list_outbox().unwrap_or_default();
+    // Replay sees an empty `InboundSpecLocks` — outbox entries already
+    // carry a concrete backend, so `Auto` resolution doesn't fire here.
+    // The real, mutating `spec_locks` lives in `main_loop` further down.
+    let replay_spec_locks = InboundSpecLocks::new(default_self_caps());
     if !pending.is_empty() {
         tracing::info!(count = pending.len(), "replaying outbox entries");
         metrics.outbox_replays_total.inc_by(pending.len() as u64);
@@ -588,6 +632,7 @@ pub async fn run(cfg: DaemonConfig) -> Result<()> {
                 device_id,
                 &mut rooms,
                 &mut occupants_cache,
+                &replay_spec_locks,
                 cmd,
                 Some(rowid),
                 &metrics,
@@ -731,6 +776,29 @@ async fn main_loop(
     // start.
     let _ = spk_rotation.tick().await;
 
+    // SPEC §7 spec-lock dispatcher. In-memory; a daemon restart
+    // resets locks to first-sight, but every inbound message also
+    // carries a fresh signed-caps element (Day 5 outbound), so a
+    // peer can re-establish their lock through the message stream
+    // without any PEP round-trip.
+    let mut spec_locks = InboundSpecLocks::new(default_self_caps());
+
+    // DEFENSIVE (not a spec requirement): per-(sender_jid,
+    // sender_device) OMEMO 0.3 KEX rate limiter. A buggy client
+    // (we've seen iOS Monal do this) that misinterprets our
+    // post-KEX `prekey='false'` follow-up as "session bad" will
+    // re-issue KEX every few seconds, burning an OPK per attempt.
+    // Each KEX consumes one of our 100 OPKs and we end up
+    // republishing the bundle constantly. Cap at 5 KEXes per
+    // (sender_jid, sender_device) per 30 seconds; drop any
+    // overflow. Once the buggy client backs off or is fixed, the
+    // window expires and the next KEX is accepted as normal.
+    // Stored as `Vec<Instant>` per key, pruned on insert. v3 may
+    // promote this to a persistent metric / orchestrator event.
+    let mut kex_rate: HashMap<(BareJid, u32), Vec<Instant>> = HashMap::new();
+    const KEX_RATE_LIMIT: usize = 5;
+    const KEX_RATE_WINDOW: Duration = Duration::from_secs(30);
+
     loop {
         tokio::select! {
             _ = bundle_health.tick() => {
@@ -760,7 +828,7 @@ async fn main_loop(
             cmd = cmd_rx.recv() => match cmd {
                 Some(Command::Shutdown) => return ExitReason::Shutdown,
                 Some(cmd) => {
-                    if let Err(e) = handle_command_inner(own_jid, client, store, own_device_id, rooms, occupants_cache, cmd, None, metrics).await {
+                    if let Err(e) = handle_command_inner(own_jid, client, store, own_device_id, rooms, occupants_cache, &spec_locks, cmd, None, metrics).await {
                         let _ = emit(&Event::Error {
                             kind: "command".into(),
                             detail: e.to_string(),
@@ -796,6 +864,96 @@ async fn main_loop(
                         }
                     };
                     let Some((sender_opt, encrypted_any)) = parsed else { continue };
+
+                    // SPEC §7.2/§7.3 — gate the wire spec against the
+                    // per-peer-device lock BEFORE we touch crypto, so
+                    // an active downgrade attempt can't even consume an
+                    // OPK. Only meaningful for 1:1 (groupchat path is
+                    // its own dispatcher; spec is per-room not per-
+                    // sender, so we skip the gate there for now).
+                    let sender_device_for_gate = match &encrypted_any {
+                        EncryptedAny::Twomemo(e) => e.sid,
+                        EncryptedAny::Oldmemo(e) => e.sid,
+                    };
+                    if !is_groupchat {
+                        if let Some(sender) = sender_opt.as_ref() {
+                            match spec_locks.observe(sender, sender_device_for_gate, &encrypted_any) {
+                                Ok(_locked) => {},
+                                Err(DispatchError::Downgrade { jid, device_id, locked, observed }) => {
+                                    let _ = emit(&Event::SpecDowngradeBlocked {
+                                        peer: jid,
+                                        device: device_id,
+                                        locked: format!("{:?}", locked),
+                                        observed: format!("{:?}", observed),
+                                    }).await;
+                                    metrics.errors_total.get_or_create(&ErrorLabel { kind: "spec_downgrade".into() }).inc();
+                                    continue;
+                                }
+                                Err(other) => {
+                                    let _ = emit(&Event::Error {
+                                        kind: "spec_observe".into(),
+                                        detail: other.to_string(),
+                                        id: None,
+                                    }).await;
+                                    continue;
+                                }
+                            }
+
+                            // Look for a sibling signed-caps payload
+                            // and (best-effort) verify it under the
+                            // sender's known IK_ed. A failure is
+                            // non-fatal — caps are advisory; the
+                            // underlying <encrypted> still processes.
+                            if let Ok(Some(caps)) = parse_signed_caps_sibling(&msg) {
+                                handle_inbound_caps(
+                                    store,
+                                    sender,
+                                    sender_device_for_gate,
+                                    &encrypted_any,
+                                    &caps,
+                                    &mut spec_locks,
+                                ).await;
+                            }
+                        }
+                    }
+
+                    // DEFENSIVE rate limit (not a spec requirement):
+                    // drop oldmemo KEXes when the same (sender_jid,
+                    // sender_device) has fired more than KEX_RATE_LIMIT
+                    // KEXes in the last KEX_RATE_WINDOW. Prevents a
+                    // buggy client's OPK-burn loop from draining our
+                    // pre-key pool. See the `kex_rate` declaration
+                    // above for the full rationale.
+                    if !is_groupchat {
+                        if let Some(sender) = sender_opt.as_ref() {
+                            // Detect KEX-bearing oldmemo inbounds: any
+                            // `<key>` for our device has `prekey=true`.
+                            let is_old_kex = if let EncryptedAny::Oldmemo(ref e) = encrypted_any {
+                                e.keys.iter().any(|k| k.rid == own_device_id && k.prekey)
+                            } else {
+                                false
+                            };
+                            if is_old_kex {
+                                let key = (sender.clone(), sender_device_for_gate);
+                                let now = Instant::now();
+                                let entry = kex_rate.entry(key.clone()).or_default();
+                                entry.retain(|t| now.duration_since(*t) <= KEX_RATE_WINDOW);
+                                if entry.len() >= KEX_RATE_LIMIT {
+                                    tracing::warn!(
+                                        peer = %sender,
+                                        device = sender_device_for_gate,
+                                        recent = entry.len(),
+                                        window_s = KEX_RATE_WINDOW.as_secs(),
+                                        "DEFENSIVE rate limit: dropping oldmemo KEX (OPK-burn protection)"
+                                    );
+                                    metrics.errors_total.get_or_create(&ErrorLabel { kind: "kex_rate_limit".into() }).inc();
+                                    continue;
+                                }
+                                entry.push(now);
+                            }
+                        }
+                    }
+
                     let result = if is_groupchat {
                         handle_inbound_muc(own_jid, client, store, own_device_id, rooms, &msg, sender_opt.as_ref(), encrypted_any, trust_policy, metrics).await
                     } else {
@@ -968,6 +1126,91 @@ async fn check_bundle_health(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// SPEC §4.3 — verify a sibling `<caps>` element under the sender's
+/// trusted IK_ed and renegotiate the spec lock from the verified caps.
+/// Best-effort: caps are advisory, so we never abort the underlying
+/// `<encrypted>` processing on caps failure — the worst case is we
+/// stay on the previously-locked spec.
+///
+/// Three outcomes:
+///   * No trusted IK on file for `(sender, device)` — skip silently
+///     (we'll see the caps on the next inbound after the device is
+///     trusted, and `InboundSpecLocks::observe` is keeping us safe in
+///     the meantime).
+///   * IK present + caps verifies — call `renegotiate` and emit
+///     `SpecRenegotiated`.
+///   * IK present + caps verify fails — emit `CapsVerifyFailed`,
+///     keep the existing lock.
+async fn handle_inbound_caps(
+    store: &Store,
+    sender: &BareJid,
+    sender_device: u32,
+    encrypted_any: &EncryptedAny,
+    caps: &SignedCaps,
+    spec_locks: &mut InboundSpecLocks,
+) {
+    let trusted = match store.trusted_device(sender.as_str(), sender_device) {
+        Ok(Some(t)) => t,
+        _ => return, // unknown device — defer until first-trust establishes IK
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if let Err(e) = caps.verify(
+        sender_device,
+        &trusted.ik_pub,
+        Some(now),
+        omemo_pep::CAPS_MAX_SKEW_SECS,
+    ) {
+        let _ = emit(&Event::CapsVerifyFailed {
+            peer: sender.to_string(),
+            device: sender_device,
+            detail: e.to_string(),
+        })
+        .await;
+        return;
+    }
+
+    // Build a Caps set from what the signed-caps element claims plus
+    // the spec the message itself just spoke (which is always implicit
+    // in a Westron-aware peer's ambient capability set).
+    let mut peer_specs: Vec<Spec> = Vec::with_capacity(3);
+    peer_specs.push(spec_of_payload(encrypted_any));
+    if caps.also_speaks_omemo_2 {
+        peer_specs.push(Spec::Omemo2);
+    }
+    if caps.also_speaks_omemo_03 {
+        peer_specs.push(Spec::Omemo03);
+    }
+    // A signed-caps-bearing peer is itself Westron-aware — only Westron
+    // clients emit this element. Add it to the peer's effective specs.
+    peer_specs.push(Spec::Westron);
+    let peer_caps = Caps::new(peer_specs);
+
+    match spec_locks.renegotiate(sender, sender_device, &peer_caps) {
+        Ok(spec) => {
+            let _ = emit(&Event::SpecRenegotiated {
+                peer: sender.to_string(),
+                device: sender_device,
+                spec: format!("{:?}", spec),
+            })
+            .await;
+        }
+        Err(_) => {
+            // No common spec — keep prior lock, no action.
+        }
+    }
+}
+
+fn spec_of_payload(p: &EncryptedAny) -> Spec {
+    match p {
+        EncryptedAny::Twomemo(_) => Spec::Omemo2,
+        EncryptedAny::Oldmemo(_) => Spec::Omemo03,
+    }
+}
+
 async fn handle_inbound(
     own_jid: &BareJid,
     client: &mut Client,
@@ -1012,6 +1255,22 @@ async fn handle_inbound(
             };
             // Refill OPKs if a KEX consumed one.
             let _ = replenish_opks(store, REPLENISH_TARGET, &mut OsRng);
+            // KEX consumed an OPK; the PEP-advertised bundle now
+            // contains a stale entry. Republish so the next peer
+            // doesn't pick the burned id and fail X3DH.
+            if was_kex {
+                match publish_my_bundle(store, client, own_device_id).await {
+                    Ok(_) => tracing::info!("post-KEX republish: OMEMO 2 bundle OK"),
+                    Err(e) => tracing::warn!(error=%e, "post-KEX republish: OMEMO 2 bundle FAILED"),
+                }
+                match omemo_pep::old_bundle_from_store(store) {
+                    Ok(old_bundle) => match publish_old_bundle(client, own_device_id, &old_bundle).await {
+                        Ok(_) => tracing::info!("post-KEX republish: OMEMO 0.3 bundle OK"),
+                        Err(e) => tracing::warn!(error=%e, "post-KEX republish: OMEMO 0.3 bundle FAILED"),
+                    },
+                    Err(e) => tracing::warn!(error=%e, "old_bundle_from_store FAILED"),
+                }
+            }
             emit(&Event::Message {
                 from: sender_jid.to_string(),
                 device: sender_device,
@@ -1027,6 +1286,23 @@ async fn handle_inbound(
         }
         EncryptedAny::Oldmemo(encrypted) => {
             let sender_device = encrypted.sid;
+            // Diagnostic: when an oldmemo KEX comes in, dig out the
+            // prekey id Monal-iOS is referencing so we can correlate
+            // against our store's unconsumed pool. Useful for hunting
+            // "X3DH header references unavailable pre key" loops.
+            if let Some(key) = encrypted.keys.iter().find(|k| k.rid == own_device_id) {
+                if key.prekey {
+                    if let Ok((pk_id, spk_id, _, _, _)) = omemo_oldmemo::parse_key_exchange(&key.data) {
+                        tracing::info!(
+                            sender_jid = %sender_jid,
+                            sender_device,
+                            pk_id,
+                            spk_id,
+                            "oldmemo inbound KEX referenced OPK"
+                        );
+                    }
+                }
+            }
             let kind = inbound_kind_oldmemo(&encrypted, own_device_id)
                 .context("classify inbound (oldmemo)")?;
             let was_kex = matches!(kind, InboundOldKind::Kex);
@@ -1059,17 +1335,50 @@ async fn handle_inbound(
                 )?,
             };
             let _ = replenish_opks(store, REPLENISH_TARGET, &mut OsRng);
+            // KEX consumed an OPK; republish both bundles so the
+            // PEP-advertised set matches the unconsumed pool (otherwise
+            // the next peer hits "header references unavailable pre key").
+            if was_kex {
+                match publish_my_bundle(store, client, own_device_id).await {
+                    Ok(_) => tracing::info!("post-oldKEX republish: OMEMO 2 bundle OK"),
+                    Err(e) => tracing::warn!(error=%e, "post-oldKEX republish: OMEMO 2 bundle FAILED"),
+                }
+                match omemo_pep::old_bundle_from_store(store) {
+                    Ok(old_bundle) => match publish_old_bundle(client, own_device_id, &old_bundle).await {
+                        Ok(_) => tracing::info!("post-oldKEX republish: OMEMO 0.3 bundle OK"),
+                        Err(e) => tracing::warn!(error=%e, "post-oldKEX republish: OMEMO 0.3 bundle FAILED"),
+                    },
+                    Err(e) => tracing::warn!(error=%e, "old_bundle_from_store FAILED"),
+                }
+                // (Note: an earlier version of this code sent an empty
+                // ZWJ "session-confirm follow-up" to dodge a Monal-iOS
+                // retry loop. That loop was actually a symptom of two
+                // bugs we've since fixed — `prekey="false"` missing on
+                // outbound key entries, and the OMEMO 0.3 AssociatedData
+                // role-swap missing. With both real fixes landed, the
+                // application-level reply (the next `Send` from the
+                // orchestrator) is enough to confirm the session, and
+                // sending an extra ZWJ surfaces as a visible empty
+                // bubble in some Monal builds. Drop the follow-up.)
+            }
             let body = String::from_utf8(body_bytes)
                 .map_err(|e| anyhow!("oldmemo body not UTF-8: {e}"))?;
-            emit(&Event::Message {
-                from: sender_jid.to_string(),
-                device: sender_device,
-                backend: BackendArg::Oldmemo,
-                body,
-                timestamp: String::new(),
-            })
-            .await?;
-            metrics.received_total.get_or_create(&BackendLabel { backend: "oldmemo" }).inc();
+            // XEP-0384 §4.3: a missing `<payload>` decodes to an empty
+            // body and is used by Monal/Conversations to pre-establish
+            // sessions without surfacing chat traffic. Session bootstrap
+            // already happened above; suppress the Message event so the
+            // orchestrator doesn't see a phantom empty inbound.
+            if !body.is_empty() {
+                emit(&Event::Message {
+                    from: sender_jid.to_string(),
+                    device: sender_device,
+                    backend: BackendArg::Oldmemo,
+                    body,
+                    timestamp: String::new(),
+                })
+                .await?;
+                metrics.received_total.get_or_create(&BackendLabel { backend: "oldmemo" }).inc();
+            }
             if was_kex {
                 emit_pending_trust_if_needed(store, &sender_jid, sender_device, metrics).await;
             }
@@ -1098,6 +1407,7 @@ fn enqueue_send_outbox(
         backend: match backend {
             BackendArg::Twomemo => omemo_pep::Backend::Twomemo,
             BackendArg::Oldmemo => omemo_pep::Backend::Oldmemo,
+            BackendArg::Auto => unreachable!("outbox enqueue requires a resolved backend"),
         },
         body: body.to_string(),
         request_id: request_id.map(|s| s.to_string()),
@@ -1179,6 +1489,43 @@ async fn emit_pending_trust_if_needed(
 /// outbox replay path and the row already exists in the store —
 /// skip enqueue, dequeue *that* rowid on success. `None` is the
 /// normal stdin path: enqueue on entry, dequeue on success.
+/// Resolve `BackendArg::Auto` to a concrete wire spec for outbound
+/// to `peer_jid`. Strategy:
+///
+///   1. Consult `spec_locks` — if any of `peer_jid`'s devices have a
+///      previously-locked spec, use the highest-priority one (single-
+///      spec-per-peer in practice; Westron > OMEMO 2 > OMEMO 0.3 if
+///      mixed). This is the inbound-driven path that covers reply
+///      flows.
+///   2. Probe the peer's PEP devicelist nodes in priority order; the
+///      first that resolves wins. Covers outbound-first sends to peers
+///      we've never heard from.
+///   3. Both probes fail → return an error (peer publishes no OMEMO
+///      devicelist on either spec).
+async fn resolve_auto_backend(
+    peer_jid: &BareJid,
+    spec_locks: &InboundSpecLocks,
+    client: &mut Client,
+) -> Result<BackendArg> {
+    if let Some(spec) = spec_locks.lookup_peer(peer_jid) {
+        return Ok(match spec {
+            Spec::Westron | Spec::Omemo2 => BackendArg::Twomemo,
+            Spec::Omemo03 => BackendArg::Oldmemo,
+        });
+    }
+    let twomemo_err = match fetch_device_list(client, Some(peer_jid.clone())).await {
+        Ok(_) => return Ok(BackendArg::Twomemo),
+        Err(e) => e,
+    };
+    let oldmemo_err = match fetch_old_device_list(client, Some(peer_jid.clone())).await {
+        Ok(_) => return Ok(BackendArg::Oldmemo),
+        Err(e) => e,
+    };
+    Err(anyhow!(
+        "peer {peer_jid} publishes neither OMEMO 2 nor OMEMO 0.3 devicelist (twomemo: {twomemo_err}; oldmemo: {oldmemo_err})"
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_command_inner(
     own_jid: &BareJid,
@@ -1187,6 +1534,7 @@ async fn handle_command_inner(
     own_device_id: u32,
     rooms: &mut HashMap<BareJid, MucRoom>,
     occupants_cache: &mut HashMap<(BareJid, omemo_pep::Backend), Vec<(BareJid, Vec<u32>)>>,
+    spec_locks: &InboundSpecLocks,
     cmd: Command,
     replay_rowid: Option<i64>,
     metrics: &DaemonMetrics,
@@ -1199,6 +1547,18 @@ async fn handle_command_inner(
             body,
             id,
         } => {
+            let peer_jid_for_probe = BareJid::from_str_strict(&peer)?;
+            // `Auto` defers backend choice to here: we consult the
+            // peer's `InboundSpecLocks` entry from the last inbound,
+            // then fall back to probing PEP devicelists in priority
+            // order (Westron/OMEMO 2 before OMEMO 0.3). This is what
+            // keeps an iOS Monal peer (OMEMO 0.3 only) reachable
+            // without callers having to know the peer's spec.
+            let backend = if backend == BackendArg::Auto {
+                resolve_auto_backend(&peer_jid_for_probe, spec_locks, client).await?
+            } else {
+                backend
+            };
             tracing::info!(peer = %peer, ?device, ?backend, body_len = body.len(), "send");
             // Persist this command in the outbox before encrypting,
             // so a daemon SIGKILL in the middle of fan-out doesn't
@@ -1212,88 +1572,445 @@ async fn handle_command_inner(
                 None => enqueue_send_outbox(store, &peer, device, backend, &body, id.as_deref()),
             };
             let peer_jid = BareJid::from_str_strict(&peer)?;
-            // Resolve the target device set:
-            //   Some(d)    → just that one
-            //   None + sessions exist → all (peer, *) sessions
-            //   None + no sessions    → discover + bootstrap each
-            //                           advertised device
-            let target_devices: Vec<u32> = match device {
-                Some(d) => vec![d],
-                None => {
-                    let store_backend = match backend {
-                        BackendArg::Twomemo => omemo_pep::Backend::Twomemo,
-                        BackendArg::Oldmemo => omemo_pep::Backend::Oldmemo,
-                    };
-                    let mut existing = store
-                        .session_devices(peer_jid.as_str(), store_backend)
-                        .map_err(|e| anyhow!("session_devices: {e}"))?;
-                    if existing.is_empty() {
-                        // No sessions yet → discover the peer's
-                        // devicelist and let `send_one` bootstrap
-                        // each one as it goes. We don't need a
-                        // separate bootstrap here — `send_one`'s
-                        // existing implicit-bootstrap path handles
-                        // it for each device id we hand it.
-                        let advertised = match backend {
-                            BackendArg::Twomemo => fetch_device_list(client, Some(peer_jid.clone()))
-                                .await
-                                .map_err(|e| anyhow!("fetch_device_list: {e}"))?
-                                .devices
-                                .into_iter()
-                                .map(|d| d.id)
-                                .collect::<Vec<_>>(),
-                            BackendArg::Oldmemo => fetch_old_device_list(client, Some(peer_jid.clone()))
-                                .await
-                                .map_err(|e| anyhow!("fetch_old_device_list: {e}"))?
-                                .devices,
-                        };
-                        if advertised.is_empty() {
-                            return Err(anyhow!(
-                                "peer {peer} advertises no devices in `{:?}` namespace",
-                                backend
-                            ));
-                        }
-                        existing = advertised;
-                    }
-                    existing
-                }
+            let backend_label = match backend {
+                BackendArg::Twomemo => "twomemo",
+                BackendArg::Oldmemo => "oldmemo",
+                BackendArg::Auto => unreachable!("Auto resolved at Send entry"),
             };
-            // Fan-out: send_one is per-device — call it once per
-            // target. v1 doesn't share the SCE envelope across
-            // devices (each call re-seals it), which costs a few
-            // extra AES blocks per device but keeps the simple
-            // single-device API. A future optimisation could
-            // batch via `encrypt_to_peers` (already used for MUC).
-            for d in &target_devices {
-                send_one(client, store, own_device_id, &peer_jid, *d, backend, &body)
-                    .await
-                    .with_context(|| format!("send to {peer}/{d}"))?;
+            // Two paths, gated by `device`:
+            //
+            //   Some(d) — caller pinned a specific device id (e.g.
+            //     orchestrator targeting one of its own resources for
+            //     backward-compat). Use the single-recipient
+            //     `send_one` path: ONE `<encrypted>` with ONE
+            //     `<key rid=d>`. Implicit-bootstrap via fetch_bundle
+            //     happens inside `send_one` if no session yet.
+            //
+            //   None    — XEP-0384 §4.6 multi-device fan-out. The
+            //     authoritative recipient set is the peer's currently-
+            //     advertised PEP devicelist; sessions for devices the
+            //     peer no longer advertises are IGNORED (they're stale
+            //     from device churn). For each advertised device we
+            //     load the existing session or bootstrap a fresh one
+            //     from the peer's bundle. Then we call the
+            //     multi-recipient encrypt helper (`encrypt_to_peers`
+            //     / `encrypt_to_peers_oldmemo`) to seal ONE payload
+            //     with N `<key rid=...>` entries — exactly one wire
+            //     stanza, dispatched once. ejabberd carbons that single
+            //     stanza to every live resource; each device finds its
+            //     own `<key>` and decrypts. No garbage "encrypted for
+            //     another device" carbons.
+            let mut any_success = false;
+            let attempted_devices: Vec<u32>;
+            match device {
+                Some(d) => {
+                    attempted_devices = vec![d];
+                    match send_one(client, store, own_device_id, &peer_jid, d, backend, &body)
+                        .await
+                    {
+                        Ok(()) => {
+                            any_success = true;
+                            emit(&Event::Sent {
+                                peer: peer.clone(),
+                                device: d,
+                                backend,
+                                id: id.clone(),
+                            })
+                            .await?;
+                            metrics
+                                .sent_total
+                                .get_or_create(&BackendLabel { backend: backend_label })
+                                .inc();
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                peer = %peer,
+                                device = d,
+                                error = %e,
+                                "pinned-device send failed"
+                            );
+                            let _ = emit(&Event::Error {
+                                kind: "send".into(),
+                                detail: format!("send to {peer}/{d}: {e:#}"),
+                                id: id.clone(),
+                            })
+                            .await;
+                        }
+                    }
+                }
+                None => {
+                    // PEP devicelist is the authoritative recipient
+                    // set per XEP-0384 §4.6. Reject the send entirely
+                    // if the peer publishes no devicelist — there's
+                    // nothing to send to.
+                    let advertised: Vec<u32> = match backend {
+                        BackendArg::Twomemo => fetch_device_list(client, Some(peer_jid.clone()))
+                            .await
+                            .map_err(|e| {
+                                anyhow!(
+                                    "fetch_device_list (twomemo) for {peer_jid}: {e}"
+                                )
+                            })?
+                            .devices
+                            .into_iter()
+                            .map(|d| d.id)
+                            .collect(),
+                        BackendArg::Oldmemo => fetch_old_device_list(
+                            client,
+                            Some(peer_jid.clone()),
+                        )
+                        .await
+                        .map_err(|e| anyhow!("fetch_old_device_list for {peer_jid}: {e}"))?
+                        .devices,
+                        BackendArg::Auto => unreachable!("Auto resolved at Send entry"),
+                    };
+                    let mut set: std::collections::BTreeSet<u32> =
+                        advertised.into_iter().collect();
+                    set.remove(&own_device_id);
+                    if set.is_empty() {
+                        return Err(anyhow!(
+                            "peer {peer} advertises no devices in `{:?}` namespace",
+                            backend
+                        ));
+                    }
+                    let target_devices: Vec<u32> = set.into_iter().collect();
+                    attempted_devices = target_devices.clone();
+
+                    // For each advertised device: load existing
+                    // session OR bootstrap a fresh one from the
+                    // peer's bundle. Bootstrap failures (missing
+                    // bundle, exhausted OPKs, etc.) drop that one
+                    // device from the fan-out but DO NOT abort —
+                    // the remaining devices still get the message.
+                    match backend {
+                        BackendArg::Twomemo => {
+                            struct PreSpec {
+                                device: u32,
+                                kex: Option<omemo_pep::KexCarrier>,
+                            }
+                            let mut prespecs: Vec<PreSpec> = Vec::new();
+                            for &d in &target_devices {
+                                let has_session = store
+                                    .load_session_snapshot(peer_jid.as_str(), d)
+                                    .map_err(|e| anyhow!("load_session: {e}"))?
+                                    .is_some();
+                                if has_session {
+                                    prespecs.push(PreSpec { device: d, kex: None });
+                                    continue;
+                                }
+                                match bootstrap_session(
+                                    client,
+                                    store,
+                                    &peer_jid,
+                                    d,
+                                    BackendArg::Twomemo,
+                                )
+                                .await
+                                {
+                                    Ok(FreshKex::Twomemo(k)) => {
+                                        prespecs.push(PreSpec { device: d, kex: Some(k) });
+                                    }
+                                    Ok(FreshKex::Oldmemo(_)) => unreachable!("backend mismatch"),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            peer = %peer_jid,
+                                            device = d,
+                                            error = %e,
+                                            "fan-out: bootstrap failed for one device; skipping"
+                                        );
+                                        let _ = emit(&Event::Error {
+                                            kind: "send".into(),
+                                            detail: format!(
+                                                "bootstrap {peer}/{d}: {e:#}"
+                                            ),
+                                            id: id.clone(),
+                                        })
+                                        .await;
+                                    }
+                                }
+                            }
+                            if prespecs.is_empty() {
+                                tracing::warn!(
+                                    peer = %peer,
+                                    "fan-out: no usable recipient devices after bootstrap; \
+                                     leaving outbox for replay"
+                                );
+                            } else {
+                                let peer_jid_str = peer_jid.as_str().to_owned();
+                                let specs: Vec<(
+                                    PeerSpec<'_>,
+                                    Box<dyn omemo_doubleratchet::dh_ratchet::DhPrivProvider>,
+                                )> = prespecs
+                                    .iter()
+                                    .map(|p| {
+                                        (
+                                            PeerSpec {
+                                                jid: peer_jid_str.as_str(),
+                                                device_id: p.device,
+                                                kex: p.kex.clone(),
+                                            },
+                                            random_priv_provider(16),
+                                        )
+                                    })
+                                    .collect();
+                                match encrypt_to_peers(
+                                    store,
+                                    own_device_id,
+                                    peer_jid.as_str(),
+                                    &body,
+                                    specs,
+                                ) {
+                                    Ok(encrypted) => {
+                                        let send_res = match caps_for_self(store, own_device_id) {
+                                            Ok(caps) => send_encrypted_with_caps(
+                                                client,
+                                                peer_jid.clone(),
+                                                &encrypted,
+                                                &caps,
+                                            )
+                                            .await
+                                            .map_err(|e| {
+                                                anyhow!("send_encrypted_with_caps: {e}")
+                                            }),
+                                            Err(_) => send_encrypted(
+                                                client,
+                                                peer_jid.clone(),
+                                                &encrypted,
+                                            )
+                                            .await
+                                            .map_err(|e| anyhow!("send_encrypted: {e}")),
+                                        };
+                                        match send_res {
+                                            Ok(()) => {
+                                                any_success = true;
+                                                for p in &prespecs {
+                                                    emit(&Event::Sent {
+                                                        peer: peer.clone(),
+                                                        device: p.device,
+                                                        backend,
+                                                        id: id.clone(),
+                                                    })
+                                                    .await?;
+                                                    metrics
+                                                        .sent_total
+                                                        .get_or_create(&BackendLabel {
+                                                            backend: backend_label,
+                                                        })
+                                                        .inc();
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    peer = %peer,
+                                                    error = %e,
+                                                    "fan-out: stanza send failed"
+                                                );
+                                                let _ = emit(&Event::Error {
+                                                    kind: "send".into(),
+                                                    detail: format!(
+                                                        "send to {peer}: {e:#}"
+                                                    ),
+                                                    id: id.clone(),
+                                                })
+                                                .await;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            peer = %peer,
+                                            error = %e,
+                                            "fan-out: encrypt_to_peers failed"
+                                        );
+                                        let _ = emit(&Event::Error {
+                                            kind: "send".into(),
+                                            detail: format!(
+                                                "encrypt_to_peers {peer}: {e:#}"
+                                            ),
+                                            id: id.clone(),
+                                        })
+                                        .await;
+                                    }
+                                }
+                            }
+                        }
+                        BackendArg::Oldmemo => {
+                            struct PreSpecOld {
+                                device: u32,
+                                kex: Option<omemo_pep::KexCarrierOld>,
+                            }
+                            let mut prespecs: Vec<PreSpecOld> = Vec::new();
+                            for &d in &target_devices {
+                                let has_session = store
+                                    .load_oldmemo_session_snapshot(peer_jid.as_str(), d)
+                                    .map_err(|e| anyhow!("load_oldmemo_session: {e}"))?
+                                    .is_some();
+                                if has_session {
+                                    prespecs.push(PreSpecOld { device: d, kex: None });
+                                    continue;
+                                }
+                                match bootstrap_session(
+                                    client,
+                                    store,
+                                    &peer_jid,
+                                    d,
+                                    BackendArg::Oldmemo,
+                                )
+                                .await
+                                {
+                                    Ok(FreshKex::Oldmemo(k)) => {
+                                        prespecs.push(PreSpecOld { device: d, kex: Some(k) });
+                                    }
+                                    Ok(FreshKex::Twomemo(_)) => unreachable!("backend mismatch"),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            peer = %peer_jid,
+                                            device = d,
+                                            error = %e,
+                                            "fan-out (oldmemo): bootstrap failed for one device; skipping"
+                                        );
+                                        let _ = emit(&Event::Error {
+                                            kind: "send".into(),
+                                            detail: format!(
+                                                "bootstrap_oldmemo {peer}/{d}: {e:#}"
+                                            ),
+                                            id: id.clone(),
+                                        })
+                                        .await;
+                                    }
+                                }
+                            }
+                            if prespecs.is_empty() {
+                                tracing::warn!(
+                                    peer = %peer,
+                                    "fan-out (oldmemo): no usable recipient devices after bootstrap"
+                                );
+                            } else {
+                                let peer_jid_str = peer_jid.as_str().to_owned();
+                                let specs: Vec<(
+                                    omemo_pep::PeerSpecOld<'_>,
+                                    Box<dyn omemo_doubleratchet::dh_ratchet::DhPrivProvider>,
+                                )> = prespecs
+                                    .iter()
+                                    .map(|p| {
+                                        (
+                                            omemo_pep::PeerSpecOld {
+                                                jid: peer_jid_str.as_str(),
+                                                device_id: p.device,
+                                                kex: p.kex.clone(),
+                                            },
+                                            random_priv_provider(16),
+                                        )
+                                    })
+                                    .collect();
+                                match omemo_pep::encrypt_to_peers_oldmemo(
+                                    store,
+                                    own_device_id,
+                                    &body,
+                                    specs,
+                                ) {
+                                    Ok(encrypted) => {
+                                        let send_res = match caps_for_self(store, own_device_id) {
+                                            Ok(caps) => send_encrypted_old_with_caps(
+                                                client,
+                                                peer_jid.clone(),
+                                                &encrypted,
+                                                &caps,
+                                            )
+                                            .await
+                                            .map_err(|e| {
+                                                anyhow!("send_encrypted_old_with_caps: {e}")
+                                            }),
+                                            Err(_) => send_encrypted_old(
+                                                client,
+                                                peer_jid.clone(),
+                                                &encrypted,
+                                            )
+                                            .await
+                                            .map_err(|e| anyhow!("send_encrypted_old: {e}")),
+                                        };
+                                        match send_res {
+                                            Ok(()) => {
+                                                any_success = true;
+                                                for p in &prespecs {
+                                                    emit(&Event::Sent {
+                                                        peer: peer.clone(),
+                                                        device: p.device,
+                                                        backend,
+                                                        id: id.clone(),
+                                                    })
+                                                    .await?;
+                                                    metrics
+                                                        .sent_total
+                                                        .get_or_create(&BackendLabel {
+                                                            backend: backend_label,
+                                                        })
+                                                        .inc();
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    peer = %peer,
+                                                    error = %e,
+                                                    "fan-out (oldmemo): stanza send failed"
+                                                );
+                                                let _ = emit(&Event::Error {
+                                                    kind: "send".into(),
+                                                    detail: format!(
+                                                        "send_old to {peer}: {e:#}"
+                                                    ),
+                                                    id: id.clone(),
+                                                })
+                                                .await;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            peer = %peer,
+                                            error = %e,
+                                            "fan-out: encrypt_to_peers_oldmemo failed"
+                                        );
+                                        let _ = emit(&Event::Error {
+                                            kind: "send".into(),
+                                            detail: format!(
+                                                "encrypt_to_peers_oldmemo {peer}: {e:#}"
+                                            ),
+                                            id: id.clone(),
+                                        })
+                                        .await;
+                                    }
+                                }
+                            }
+                        }
+                        BackendArg::Auto => unreachable!("Auto resolved at Send entry"),
+                    }
+                }
             }
-            for d in &target_devices {
-                emit(&Event::Sent {
-                    peer: peer.clone(),
-                    device: *d,
-                    backend,
-                    id: id.clone(),
-                })
-                .await?;
-                metrics
-                    .sent_total
-                    .get_or_create(&BackendLabel {
-                        backend: match backend {
-                            BackendArg::Twomemo => "twomemo",
-                            BackendArg::Oldmemo => "oldmemo",
-                        },
-                    })
-                    .inc();
-            }
-            // Whole fan-out succeeded → drop the outbox row.
-            if let Some(rowid) = outbox_rowid {
-                let _ = store.dequeue_outbox(rowid);
+            // At least one device got the message → drop the
+            // outbox row. If every device failed, leave the row
+            // for replay on next startup (peer might be offline
+            // or briefly unreachable).
+            if any_success {
+                if let Some(rowid) = outbox_rowid {
+                    let _ = store.dequeue_outbox(rowid);
+                }
+            } else {
+                tracing::warn!(
+                    peer = %peer,
+                    targets = ?attempted_devices,
+                    "fan-out: every device failed; leaving outbox row for replay"
+                );
             }
         }
         Command::Discover { peer, backend, id } => {
             let peer_jid = BareJid::from_str_strict(&peer)?;
+            // `Auto` on Discover resolves the same way as on Send.
+            let backend = if backend == BackendArg::Auto {
+                resolve_auto_backend(&peer_jid, spec_locks, client).await?
+            } else {
+                backend
+            };
             let devices = match backend {
                 BackendArg::Twomemo => fetch_device_list(client, Some(peer_jid))
                     .await
@@ -1306,6 +2023,7 @@ async fn handle_command_inner(
                     .await
                     .map_err(|e| anyhow!("fetch_old_device_list: {e}"))?
                     .devices,
+                BackendArg::Auto => unreachable!("Auto resolved above"),
             };
             emit(&Event::DeviceList {
                 peer,
@@ -1362,9 +2080,19 @@ async fn handle_command_inner(
             let muc = rooms
                 .get(&room_jid)
                 .ok_or_else(|| anyhow!("not in MUC {room} (run join_muc first)"))?;
+            // MUC doesn't carry per-occupant spec locks today (that's
+            // the v3 follow-up). When given `Auto`, fall back to
+            // OMEMO 2 — callers that need OMEMO 0.3 fan-out in a MUC
+            // must request it explicitly.
+            let backend = if backend == BackendArg::Auto {
+                BackendArg::Twomemo
+            } else {
+                backend
+            };
             let pep_backend = match backend {
                 BackendArg::Twomemo => omemo_pep::Backend::Twomemo,
                 BackendArg::Oldmemo => omemo_pep::Backend::Oldmemo,
+                BackendArg::Auto => unreachable!("Auto folded above"),
             };
             let occupant_devs = occupants_cache
                 .get(&(room_jid.clone(), pep_backend))
@@ -1377,7 +2105,9 @@ async fn handle_command_inner(
                 ));
             }
 
+            #[allow(clippy::single_match_else)]
             match backend {
+                BackendArg::Auto => unreachable!("Auto folded above"),
                 BackendArg::Twomemo => {
                     struct PreSpec {
                         peer_jid: String,
@@ -1563,6 +2293,7 @@ async fn handle_command_inner(
                     backend: match backend {
                         BackendArg::Twomemo => "twomemo",
                         BackendArg::Oldmemo => "oldmemo",
+                        BackendArg::Auto => unreachable!("Auto folded above"),
                     },
                 })
                 .inc();
@@ -1573,9 +2304,15 @@ async fn handle_command_inner(
             let muc = rooms
                 .get(&room_jid)
                 .ok_or_else(|| anyhow!("not in MUC {room}"))?;
+            let backend = if backend == BackendArg::Auto {
+                BackendArg::Twomemo
+            } else {
+                backend
+            };
             let pep_backend = match backend {
                 BackendArg::Twomemo => omemo_pep::Backend::Twomemo,
                 BackendArg::Oldmemo => omemo_pep::Backend::Oldmemo,
+                BackendArg::Auto => unreachable!("Auto folded above"),
             };
             let occupant_devs = match backend {
                 BackendArg::Twomemo => muc
@@ -1586,6 +2323,7 @@ async fn handle_command_inner(
                     .refresh_old_device_lists(client, store)
                     .await
                     .map_err(|e| anyhow!("refresh_old_device_lists: {e}"))?,
+                BackendArg::Auto => unreachable!("Auto folded above"),
             };
             let infos = occupant_infos(muc, &occupant_devs);
             occupants_cache.insert((room_jid, pep_backend), occupant_devs);
@@ -2008,6 +2746,7 @@ async fn bootstrap_session(
     let mut ephemeral_priv = [0u8; 32];
     OsRng.fill_bytes(&mut ephemeral_priv);
     match backend {
+        BackendArg::Auto => unreachable!("Auto must be resolved before bootstrap"),
         BackendArg::Twomemo => {
             let bundle = fetch_bundle(client, Some(peer_jid.clone()), device)
                 .await
@@ -2061,6 +2800,7 @@ async fn send_one(
     body: &str,
 ) -> Result<()> {
     match backend {
+        BackendArg::Auto => unreachable!("Auto must be resolved before send_one"),
         BackendArg::Twomemo => {
             // First send to a brand-new (peer, device) → bootstrap
             // implicitly and attach the resulting `KexCarrier` to
@@ -2089,9 +2829,24 @@ async fn send_one(
                 kex,
                 random_priv_provider(16),
             )?;
-            send_encrypted(client, peer_jid.clone(), &encrypted)
-                .await
-                .map_err(|e| anyhow!("send_encrypted: {e}"))?;
+            // SPEC §4.3 — sibling signed-caps so a Westron-aware peer
+            // can renegotiate the spec lock without round-tripping
+            // through PEP. Legacy clients ignore the unknown payload.
+            // Best-effort: if caps_for_self fails (shouldn't, the
+            // store identity is loaded by here), fall back to the
+            // plain send.
+            match caps_for_self(store, own_device_id) {
+                Ok(caps) => {
+                    send_encrypted_with_caps(client, peer_jid.clone(), &encrypted, &caps)
+                        .await
+                        .map_err(|e| anyhow!("send_encrypted_with_caps: {e}"))?;
+                }
+                Err(_) => {
+                    send_encrypted(client, peer_jid.clone(), &encrypted)
+                        .await
+                        .map_err(|e| anyhow!("send_encrypted: {e}"))?;
+                }
+            }
         }
         BackendArg::Oldmemo => {
             let kex = if store
@@ -2115,9 +2870,18 @@ async fn send_one(
                 kex,
                 random_priv_provider(16),
             )?;
-            send_encrypted_old(client, peer_jid.clone(), &encrypted)
-                .await
-                .map_err(|e| anyhow!("send_encrypted_old: {e}"))?;
+            match caps_for_self(store, own_device_id) {
+                Ok(caps) => {
+                    send_encrypted_old_with_caps(client, peer_jid.clone(), &encrypted, &caps)
+                        .await
+                        .map_err(|e| anyhow!("send_encrypted_old_with_caps: {e}"))?;
+                }
+                Err(_) => {
+                    send_encrypted_old(client, peer_jid.clone(), &encrypted)
+                        .await
+                        .map_err(|e| anyhow!("send_encrypted_old: {e}"))?;
+                }
+            }
         }
     }
     Ok(())
@@ -2141,7 +2905,11 @@ fn ensure_local_identity(
     let identity = if let Some(id) = store.get_identity()? {
         id
     } else {
-        let device_id = device_id_hint.unwrap_or_else(|| OsRng.next_u32());
+        // Constrain device id to i32::MAX so the wire form stays unsigned
+        // even on clients that reinterpret high-bit ids via i64 (Monal-iOS
+        // sign-extends signed i32 in PEP `bundles:<id>` node lookups,
+        // landing on the wrong PEP node — see ejabberd trace).
+        let device_id = device_id_hint.unwrap_or_else(|| OsRng.next_u32() & 0x7FFFFFFF);
         install_identity_random(store, bare_jid.as_str(), device_id, opk_count, &mut OsRng)
             .context("install_identity_random")?
     };

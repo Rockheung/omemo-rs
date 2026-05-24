@@ -28,6 +28,7 @@ http-body-util = "0.1"
 
 omemo-pep = { path = "../omemo-pep" }
 omemo-twomemo = { path = "../omemo-twomemo" }
+omemo-oldmemo = { path = "../omemo-oldmemo" }
 omemo-doubleratchet = { path = "../omemo-doubleratchet" }
 
 [dev-dependencies]

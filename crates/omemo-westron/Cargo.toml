@@ -1,0 +1,30 @@
+[package]
+name = "omemo-westron"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Westron — unified spec layer over OMEMO 0.3 and OMEMO 2"
+
+[dependencies]
+curve25519-dalek = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["pkcs8", "rand_core"] }
+x25519-dalek = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+rand_core = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+quick-xml = { workspace = true }
+prost = { workspace = true }
+
+# Sibling crates — Westron sits on top, doesn't reimplement
+omemo-xeddsa = { path = "../omemo-xeddsa" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+hex-literal = "0.4"
