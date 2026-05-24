@@ -244,6 +244,16 @@ pub const DEFAULT_DOS_THRESHOLD: u64 = 1000;
 
 type SkippedKey = ([u8; 32], u64);
 
+/// Which X3DH role this session was bootstrapped with. Determines the
+/// AssociatedData orientation per python-twomemo (`twomemo.py`,
+/// libsignal-conformant): the AD halves are swapped when an ACTIVE party
+/// decrypts or a PASSIVE party encrypts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRole {
+    Active,
+    Passive,
+}
+
 /// twomemo-flavoured Double Ratchet session. Owns the underlying
 /// [`DiffieHellmanRatchet`], an X3DH-derived AD that gets pre-pended to
 /// every AEAD HMAC, and a FIFO of skipped message keys.
@@ -252,6 +262,7 @@ pub struct TwomemoSession {
     ad_x3dh: Vec<u8>,
     skipped: VecDeque<(SkippedKey, Vec<u8>)>,
     max_skipped: usize,
+    role: SessionRole,
 }
 
 impl TwomemoSession {
@@ -278,6 +289,7 @@ impl TwomemoSession {
             ad_x3dh,
             skipped: VecDeque::new(),
             max_skipped: DEFAULT_MAX_SKIPPED,
+            role: SessionRole::Active,
         })
     }
 
@@ -305,7 +317,28 @@ impl TwomemoSession {
             ad_x3dh,
             skipped: VecDeque::new(),
             max_skipped: DEFAULT_MAX_SKIPPED,
+            role: SessionRole::Passive,
         })
+    }
+
+    /// Return the AssociatedData oriented for either the encrypt path
+    /// (`sending = true`) or the decrypt path (`sending = false`).
+    /// Mirrors `OldmemoSession::role_ad` — see that doc for rationale.
+    /// The AD is always exactly two halves (64 bytes total), so
+    /// `len()/2` is safe.
+    fn role_ad(&self, sending: bool) -> Vec<u8> {
+        let swap = matches!(
+            (self.role, sending),
+            (SessionRole::Active, false) | (SessionRole::Passive, true)
+        );
+        if !swap {
+            return self.ad_x3dh.clone();
+        }
+        let half = self.ad_x3dh.len() / 2;
+        let mut out = Vec::with_capacity(self.ad_x3dh.len());
+        out.extend_from_slice(&self.ad_x3dh[half..]);
+        out.extend_from_slice(&self.ad_x3dh[..half]);
+        out
     }
 
     /// Encrypt one message. Returns the serialized
@@ -315,7 +348,7 @@ impl TwomemoSession {
         plaintext: &[u8],
     ) -> Result<Vec<u8>, omemo_doubleratchet::dh_ratchet::DhRatchetError> {
         let (msg_key, dr_header) = self.dh.next_encryption_key()?;
-        let ad = build_associated_data(&self.ad_x3dh, &dr_header);
+        let ad = build_associated_data(&self.role_ad(true), &dr_header);
         Ok(aead_encrypt(&ad, &msg_key, plaintext))
     }
 
@@ -342,7 +375,7 @@ impl TwomemoSession {
         let key_idx = (header.ratchet_pub, header.sending_chain_length);
         if let Some(pos) = self.skipped.iter().position(|(k, _)| *k == key_idx) {
             let mk = self.skipped[pos].1.clone();
-            let ad = build_associated_data(&self.ad_x3dh, &header);
+            let ad = build_associated_data(&self.role_ad(false), &header);
             let pt = aead_decrypt(&ad, &mk, auth_msg_bytes)?;
             self.skipped.remove(pos);
             return Ok(pt);
@@ -353,7 +386,7 @@ impl TwomemoSession {
         let (mk, new_skipped) = dh_clone
             .next_decryption_key(&header)
             .map_err(|_| TwomemoError::AuthFailed)?;
-        let ad = build_associated_data(&self.ad_x3dh, &header);
+        let ad = build_associated_data(&self.role_ad(false), &header);
         let pt = aead_decrypt(&ad, &mk, auth_msg_bytes)?;
 
         self.dh = dh_clone;
@@ -378,6 +411,7 @@ impl TwomemoSession {
             ad_x3dh: self.ad_x3dh.clone(),
             max_skipped: self.max_skipped,
             skipped: self.skipped.iter().cloned().collect(),
+            role: self.role,
         }
     }
 
@@ -392,6 +426,7 @@ impl TwomemoSession {
             ad_x3dh: s.ad_x3dh,
             skipped: s.skipped.into_iter().collect(),
             max_skipped: s.max_skipped,
+            role: s.role,
         }
     }
 }
@@ -403,9 +438,10 @@ pub struct TwomemoSessionSnapshot {
     pub ad_x3dh: Vec<u8>,
     pub max_skipped: usize,
     pub skipped: Vec<(SkippedKey, Vec<u8>)>,
+    pub role: SessionRole,
 }
 
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 impl TwomemoSessionSnapshot {
     /// Length-prefixed deterministic encoding. Suitable for SQLite BLOB
@@ -430,6 +466,10 @@ impl TwomemoSessionSnapshot {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(SNAPSHOT_VERSION);
+        out.push(match self.role {
+            SessionRole::Active => 0,
+            SessionRole::Passive => 1,
+        });
         out.extend_from_slice(&self.dh.own_ratchet_priv);
         out.extend_from_slice(&self.dh.other_ratchet_pub);
         write_bytes(&mut out, &self.dh.root_chain_key);
@@ -459,9 +499,20 @@ impl TwomemoSessionSnapshot {
     pub fn decode(input: &[u8]) -> Result<Self, TwomemoError> {
         let mut r = ByteReader::new(input);
         let version = r.read_u8()?;
-        if version != SNAPSHOT_VERSION {
+        if version != 1 && version != SNAPSHOT_VERSION {
             return Err(TwomemoError::HeaderMismatch);
         }
+        // v2 added a role byte right after the version. v1 has no such
+        // byte; default to Active for round-trip continuity.
+        let role = if version == SNAPSHOT_VERSION {
+            match r.read_u8()? {
+                0 => SessionRole::Active,
+                1 => SessionRole::Passive,
+                _ => return Err(TwomemoError::HeaderMismatch),
+            }
+        } else {
+            SessionRole::Active
+        };
         let own_ratchet_priv = r.read_array_32()?;
         let other_ratchet_pub = r.read_array_32()?;
         let root_chain_key = r.read_bytes()?;
@@ -503,6 +554,7 @@ impl TwomemoSessionSnapshot {
             ad_x3dh,
             max_skipped,
             skipped,
+            role,
         })
     }
 }

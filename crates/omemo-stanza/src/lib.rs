@@ -156,10 +156,33 @@ pub(crate) fn req_attr<'a>(
 }
 
 pub(crate) fn parse_u32(name: &'static str, value: &str) -> Result<u32, StanzaError> {
-    value.parse::<u32>().map_err(|_| StanzaError::NotU32 {
+    // Interop quirk: some OMEMO clients (e.g. iOS Monal) encode device
+    // ids as signed i32 on the wire. Two's-complement reinterpret an
+    // i32 to its u32 bit-pattern so a device id like -29649581 becomes
+    // 4265317715 — matches what the same client used to publish on PEP.
+    if let Ok(v) = value.parse::<u32>() {
+        return Ok(v);
+    }
+    if let Ok(signed) = value.parse::<i32>() {
+        return Ok(signed as u32);
+    }
+    Err(StanzaError::NotU32 {
         attr: name.to_string(),
         got: value.to_string(),
     })
+}
+
+/// Render a device id matching the wire convention used by clients
+/// that treat ids as i32. When the high bit is set, output the
+/// negative form so iOS Monal and similar peers can match against
+/// their own (signed) internal representation. Spec-conformant
+/// clients parse both forms identically.
+pub(crate) fn device_id_str(id: u32) -> String {
+    if id > i32::MAX as u32 {
+        (id as i32).to_string()
+    } else {
+        id.to_string()
+    }
 }
 
 pub(crate) fn req_u32_attr<'a>(
@@ -341,7 +364,7 @@ impl Encrypted {
         w.write_event(Event::Start(enc.borrow()))?;
 
         let mut hdr = BytesStart::new("header");
-        let sid_str = self.sid.to_string();
+        let sid_str = device_id_str(self.sid);
         hdr.push_attribute(("sid", sid_str.as_str()));
         w.write_event(Event::Start(hdr.borrow()))?;
 
@@ -350,7 +373,7 @@ impl Encrypted {
             keys_el.push_attribute(("jid", kg.jid.as_str()));
             w.write_event(Event::Start(keys_el.borrow()))?;
             for k in &kg.keys {
-                let rid_str = k.rid.to_string();
+                let rid_str = device_id_str(k.rid);
                 let mut key_el = BytesStart::new("key");
                 key_el.push_attribute(("rid", rid_str.as_str()));
                 if k.kex {
@@ -577,7 +600,7 @@ impl DeviceList {
         w.write_event(Event::Start(list_el.borrow()))?;
 
         for d in &self.devices {
-            let id_str = d.id.to_string();
+            let id_str = device_id_str(d.id);
             let mut dev = BytesStart::new("device");
             dev.push_attribute(("id", id_str.as_str()));
             if let Some(label) = &d.label {

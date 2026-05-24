@@ -105,6 +105,35 @@ jobs:
           cargo test -p omemo-rs-cli --test python_interop \
               -- --ignored --test-threads=1
 
+      - name: cargo test --test python_interop_stanza -- --ignored
+        # Byte-exact cross-impl checks of the XEP-0384 v0.3 stanza
+        # encoder (bundle / device list / encrypted message), the
+        # OMEMO 2 twomemo encrypted-stanza shape, the SPK signature
+        # over `0x05 || curve25519_spk_pub`, AES-128-GCM body seal,
+        # and the SCE envelope structural-gap probe against
+        # python-omemo. Pins the documented Monal-compat divergences
+        # (`prekey="false"`, signed-i32 device id rendering) so an
+        # accidental "fix" surfaces here loudly. See
+        # `crates/omemo-stanza/tests/python_interop_stanza.rs`.
+        env:
+          OMEMO_RS_PYTHON: python
+        run: |
+          cargo test -p omemo-stanza --test python_interop_stanza \
+              -- --ignored
+
+      - name: cargo test --test python_interop_session -- --ignored
+        # Session-level cross-impl checks: OPK consume-once
+        # enforcement against a python-parsed KEX, and 3-device
+        # multi-recipient stanza shape (one <payload>, three
+        # distinct <key rid=…> sealed blobs, each decoding as a
+        # python `OMEMOKeyExchange` with the right pk_id). See
+        # `crates/omemo-pep/tests/python_interop_session.rs`.
+        env:
+          OMEMO_RS_PYTHON: python
+        run: |
+          cargo test -p omemo-pep --test python_interop_session \
+              -- --ignored
+
       - name: Prosody logs (always, for debugging)
         if: always()
         run: docker compose -f test-vectors/integration/xmpp/docker-compose.yml logs --tail=200

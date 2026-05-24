@@ -305,12 +305,25 @@ pub const DEFAULT_DOS_THRESHOLD: u64 = 1000;
 
 type SkippedKey = ([u8; 32], u64);
 
+/// Which X3DH role this session was bootstrapped with. Determines the
+/// AssociatedData orientation per python-oldmemo (`oldmemo.py:1297-1348`,
+/// libsignal-conformant): the AD halves are swapped when an ACTIVE party
+/// decrypts or a PASSIVE party encrypts — i.e. whenever the receiver's
+/// view of `enc(ik_a) || enc(ik_b)` does not match the encoder's "self
+/// first, peer second" ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRole {
+    Active,
+    Passive,
+}
+
 /// oldmemo-flavoured Double Ratchet session.
 pub struct OldmemoSession {
     dh: DiffieHellmanRatchet<RootKdf, MsgKdf>,
     ad_x3dh: Vec<u8>,
     skipped: VecDeque<(SkippedKey, Vec<u8>)>,
     max_skipped: usize,
+    role: SessionRole,
 }
 
 impl OldmemoSession {
@@ -332,6 +345,7 @@ impl OldmemoSession {
             ad_x3dh,
             skipped: VecDeque::new(),
             max_skipped: DEFAULT_MAX_SKIPPED,
+            role: SessionRole::Active,
         })
     }
 
@@ -355,7 +369,34 @@ impl OldmemoSession {
             ad_x3dh,
             skipped: VecDeque::new(),
             max_skipped: DEFAULT_MAX_SKIPPED,
+            role: SessionRole::Passive,
         })
+    }
+
+    /// Return the AssociatedData oriented for either the encrypt path
+    /// (`sending = true`) or the decrypt path (`sending = false`).
+    ///
+    /// python-oldmemo (`oldmemo.py:1297-1348`, libsignal-conformant): the
+    /// X3DH-derived AD is always stored from the ACTIVE party's POV as
+    /// `enc(ik_active) || enc(ik_passive)`. The receiver must see
+    /// `enc(ik_sender) || enc(ik_recipient)`, so we swap halves whenever
+    /// the ACTIVE party is decrypting or the PASSIVE party is encrypting.
+    ///
+    /// The AD is always exactly two `IDENTITY_KEY_ENCODING_LENGTH` halves
+    /// (66 bytes), so `len()/2` is safe.
+    fn role_ad(&self, sending: bool) -> Vec<u8> {
+        let swap = matches!(
+            (self.role, sending),
+            (SessionRole::Active, false) | (SessionRole::Passive, true)
+        );
+        if !swap {
+            return self.ad_x3dh.clone();
+        }
+        let half = self.ad_x3dh.len() / 2;
+        let mut out = Vec::with_capacity(self.ad_x3dh.len());
+        out.extend_from_slice(&self.ad_x3dh[half..]);
+        out.extend_from_slice(&self.ad_x3dh[..half]);
+        out
     }
 
     pub fn encrypt_message(
@@ -363,7 +404,7 @@ impl OldmemoSession {
         plaintext: &[u8],
     ) -> Result<Vec<u8>, omemo_doubleratchet::dh_ratchet::DhRatchetError> {
         let (msg_key, dr_header) = self.dh.next_encryption_key()?;
-        let ad = build_associated_data(&self.ad_x3dh, &dr_header);
+        let ad = build_associated_data(&self.role_ad(true), &dr_header);
         Ok(aead_encrypt(&ad, &msg_key, plaintext))
     }
 
@@ -382,7 +423,7 @@ impl OldmemoSession {
         let key_idx = (header.ratchet_pub, header.sending_chain_length);
         if let Some(pos) = self.skipped.iter().position(|(k, _)| *k == key_idx) {
             let mk = self.skipped[pos].1.clone();
-            let ad = build_associated_data(&self.ad_x3dh, &header);
+            let ad = build_associated_data(&self.role_ad(false), &header);
             let pt = aead_decrypt(&ad, &mk, auth_msg_blob)?;
             self.skipped.remove(pos);
             return Ok(pt);
@@ -392,7 +433,7 @@ impl OldmemoSession {
         let (mk, new_skipped) = dh_clone
             .next_decryption_key(&header)
             .map_err(|_| OldmemoError::AuthFailed)?;
-        let ad = build_associated_data(&self.ad_x3dh, &header);
+        let ad = build_associated_data(&self.role_ad(false), &header);
         let pt = aead_decrypt(&ad, &mk, auth_msg_blob)?;
 
         self.dh = dh_clone;
@@ -415,6 +456,7 @@ impl OldmemoSession {
             ad_x3dh: self.ad_x3dh.clone(),
             max_skipped: self.max_skipped,
             skipped: self.skipped.iter().cloned().collect(),
+            role: self.role,
         }
     }
 
@@ -427,6 +469,7 @@ impl OldmemoSession {
             ad_x3dh: s.ad_x3dh,
             skipped: s.skipped.into_iter().collect(),
             max_skipped: s.max_skipped,
+            role: s.role,
         }
     }
 }
@@ -437,14 +480,19 @@ pub struct OldmemoSessionSnapshot {
     pub ad_x3dh: Vec<u8>,
     pub max_skipped: usize,
     pub skipped: Vec<(SkippedKey, Vec<u8>)>,
+    pub role: SessionRole,
 }
 
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 impl OldmemoSessionSnapshot {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(SNAPSHOT_VERSION);
+        out.push(match self.role {
+            SessionRole::Active => 0,
+            SessionRole::Passive => 1,
+        });
         out.extend_from_slice(&self.dh.own_ratchet_priv);
         out.extend_from_slice(&self.dh.other_ratchet_pub);
         write_bytes(&mut out, &self.dh.root_chain_key);
@@ -474,9 +522,22 @@ impl OldmemoSessionSnapshot {
     pub fn decode(input: &[u8]) -> Result<Self, OldmemoError> {
         let mut r = ByteReader::new(input);
         let version = r.read_u8()?;
-        if version != SNAPSHOT_VERSION {
+        if version != 1 && version != SNAPSHOT_VERSION {
             return Err(OldmemoError::HeaderMismatch);
         }
+        // v2 added a role byte right after the version. v1 has no such
+        // byte; default to Active (see SNAPSHOT_VERSION doc / commit msg:
+        // legacy sessions either already round-tripped successfully as
+        // Active or have not yet sent a Bob-outgoing where this matters).
+        let role = if version == SNAPSHOT_VERSION {
+            match r.read_u8()? {
+                0 => SessionRole::Active,
+                1 => SessionRole::Passive,
+                _ => return Err(OldmemoError::HeaderMismatch),
+            }
+        } else {
+            SessionRole::Active
+        };
         let own_ratchet_priv = r.read_array_32()?;
         let other_ratchet_pub = r.read_array_32()?;
         let root_chain_key = r.read_bytes()?;
@@ -518,6 +579,7 @@ impl OldmemoSessionSnapshot {
             ad_x3dh,
             max_skipped,
             skipped,
+            role,
         })
     }
 }
@@ -838,6 +900,79 @@ mod tests {
         let m2 = bob.encrypt_message(b"hi alice").unwrap();
         let pt2 = alice.decrypt_message(&m2).unwrap();
         assert_eq!(pt2, b"hi alice");
+    }
+
+    #[test]
+    fn role_ad_swap_active_vs_passive() {
+        // Build an asymmetric AD where the two encoded-IK halves differ,
+        // so byte-equality is a real signal that swap fired.
+        let mut ad_x3dh = Vec::with_capacity(IDENTITY_KEY_ENCODING_LENGTH * 2);
+        ad_x3dh.extend(std::iter::repeat(0xAAu8).take(IDENTITY_KEY_ENCODING_LENGTH));
+        ad_x3dh.extend(std::iter::repeat(0xBBu8).take(IDENTITY_KEY_ENCODING_LENGTH));
+        let mut swapped = Vec::with_capacity(ad_x3dh.len());
+        swapped.extend_from_slice(&ad_x3dh[IDENTITY_KEY_ENCODING_LENGTH..]);
+        swapped.extend_from_slice(&ad_x3dh[..IDENTITY_KEY_ENCODING_LENGTH]);
+
+        // Construct sessions of each role with the same AD.
+        let bob_spk_priv = [0x33u8; 32];
+        let bob_spk_pub = {
+            let sk = x25519_dalek_v2::StaticSecret::from(bob_spk_priv);
+            let pk: x25519_dalek_v2::PublicKey = (&sk).into();
+            pk.to_bytes()
+        };
+        let alice = OldmemoSession::create_active(
+            ad_x3dh.clone(),
+            vec![0x55u8; 32],
+            bob_spk_pub,
+            fixed_priv_provider(vec![[0x10u8; 32]; 4]),
+        )
+        .unwrap();
+        let bob = OldmemoSession::create_passive(
+            ad_x3dh.clone(),
+            vec![0x55u8; 32],
+            bob_spk_priv,
+            [0x77u8; 32],
+            fixed_priv_provider(vec![[0x20u8; 32]; 4]),
+        )
+        .unwrap();
+
+        // Active encrypting, Passive decrypting: no swap.
+        assert_eq!(alice.role_ad(true), ad_x3dh);
+        assert_eq!(bob.role_ad(false), ad_x3dh);
+        // Active decrypting, Passive encrypting: swap.
+        assert_eq!(alice.role_ad(false), swapped);
+        assert_eq!(bob.role_ad(true), swapped);
+        // Sanity: swap actually changes bytes (the halves differ).
+        assert_ne!(ad_x3dh, swapped);
+    }
+
+    #[test]
+    fn snapshot_v1_decodes_as_active() {
+        // Build a real session, take a v2 snapshot, then hand-craft a v1
+        // blob by stripping the role byte and downgrading the version
+        // byte. Decoding must succeed and yield SessionRole::Active.
+        let bob_spk_priv = [0x33u8; 32];
+        let bob_spk_pub = {
+            let sk = x25519_dalek_v2::StaticSecret::from(bob_spk_priv);
+            let pk: x25519_dalek_v2::PublicKey = (&sk).into();
+            pk.to_bytes()
+        };
+        let alice = OldmemoSession::create_active(
+            vec![0u8; IDENTITY_KEY_ENCODING_LENGTH * 2],
+            vec![0x55u8; 32],
+            bob_spk_pub,
+            fixed_priv_provider(vec![[0x10u8; 32]; 4]),
+        )
+        .unwrap();
+        let snap = alice.snapshot();
+        let v2 = snap.encode();
+        assert_eq!(v2[0], SNAPSHOT_VERSION);
+        // v1: replace [version=2, role=0/1] with [version=1].
+        let mut v1 = Vec::with_capacity(v2.len() - 1);
+        v1.push(1);
+        v1.extend_from_slice(&v2[2..]);
+        let decoded = OldmemoSessionSnapshot::decode(&v1).unwrap();
+        assert_eq!(decoded.role, SessionRole::Active);
     }
 }
 

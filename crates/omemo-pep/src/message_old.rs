@@ -243,11 +243,15 @@ pub fn decrypt_message_oldmemo(
     let key_blob = our_session
         .decrypt_message(&key.data)
         .map_err(MessageOldError::Oldmemo)?;
-    let payload = encrypted
-        .payload
-        .as_ref()
-        .ok_or(MessageOldError::PayloadMissing)?;
-    Ok(open_old_payload(payload, &encrypted.iv, &key_blob)?)
+    // XEP-0384 §4.3: a missing `<payload>` is the wire encoding for an
+    // empty body (key-only / heartbeat). The ratchet step has already
+    // advanced; surface that as an empty plaintext so the caller can
+    // commit the session and decide whether to deliver an empty
+    // message event.
+    match encrypted.payload.as_ref() {
+        Some(payload) => Ok(open_old_payload(payload, &encrypted.iv, &key_blob)?),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Bootstrap a passive [`OldmemoSession`] from an inbound `<encrypted>`
@@ -309,11 +313,13 @@ where
     let key_blob = session
         .decrypt_message(&auth_blob)
         .map_err(MessageOldError::Oldmemo)?;
-    let payload = encrypted
-        .payload
-        .as_ref()
-        .ok_or(MessageOldError::PayloadMissing)?;
-    let plaintext = open_old_payload(payload, &encrypted.iv, &key_blob)?;
+    // Missing `<payload>` = key-only KEX (Monal/Conversations send these
+    // to pre-establish sessions before any real chat traffic). Session
+    // bootstrap and OPK consumption still happen; body is empty.
+    let plaintext = match encrypted.payload.as_ref() {
+        Some(payload) => open_old_payload(payload, &encrypted.iv, &key_blob)?,
+        None => Vec::new(),
+    };
 
     Ok((session, plaintext, pk_id))
 }

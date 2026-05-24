@@ -14,3 +14,10 @@ aes-gcm = "0.10"
 rand_core = { workspace = true }
 zeroize = { workspace = true }
 omemo-xeddsa = { path = "../omemo-xeddsa" }
+
+[dev-dependencies]
+# Used only by `tests/python_interop_stanza.rs` (gated behind
+# `#[ignore]`). Runs a Python subprocess to compare wire shapes
+# against the python-omemo reference impl.
+hex = { workspace = true }
+serde_json = { workspace = true }

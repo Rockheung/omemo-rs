@@ -32,9 +32,7 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
 use quick_xml::writer::Writer;
 
-use crate::{
-    attr_str, b64_decode, b64_encode, local_name, read_text, req_u32_attr, StanzaError,
-};
+use crate::{attr_str, b64_decode, b64_encode, local_name, read_text, req_u32_attr, StanzaError};
 
 pub const NS: &str = "eu.siacs.conversations.axolotl";
 
@@ -168,17 +166,25 @@ impl Encrypted {
         w.write_event(Event::Start(enc.borrow()))?;
 
         let mut hdr = BytesStart::new("header");
-        let sid_str = self.sid.to_string();
+        let sid_str = crate::device_id_str(self.sid);
         hdr.push_attribute(("sid", sid_str.as_str()));
         w.write_event(Event::Start(hdr.borrow()))?;
 
         for k in &self.keys {
-            let rid_str = k.rid.to_string();
+            let rid_str = crate::device_id_str(k.rid);
             let mut key_el = BytesStart::new("key");
             key_el.push_attribute(("rid", rid_str.as_str()));
-            if k.prekey {
-                key_el.push_attribute(("prekey", "true"));
-            }
+            // XEP-0384 §4 (axolotl/OMEMO 0.3) — emit `prekey` attribute
+            // EXPLICITLY on every key, including follow-ups. iOS Monal's
+            // libsignal-protocol-objc parser treats a missing attribute
+            // as truthy and tries to parse the bare AuthenticatedMessage
+            // as an OMEMOKeyExchange protobuf, returning Signal error
+            // code 7 ("Invalid Message") — which Monal interprets as
+            // "session is bad" and re-issues a KEX, starting an infinite
+            // OPK-burning retry loop. Conversations / python-omemo
+            // permissively default missing → false, hiding this on those
+            // clients.
+            key_el.push_attribute(("prekey", if k.prekey { "true" } else { "false" }));
             w.write_event(Event::Start(key_el.borrow()))?;
             let txt = b64_encode(&k.data);
             w.write_event(Event::Text(BytesText::new(&txt)))?;
@@ -325,19 +331,24 @@ impl Bundle {
             }
         }
 
-        let spk_pub_raw =
-            strip_curve_prefix(&spk_pub_curve_prefixed.ok_or(StanzaError::MissingElement("signedPreKeyPublic"))?)?;
-        let mut sig_stuffed = spk_sig_stuffed.ok_or(StanzaError::MissingElement("signedPreKeySignature"))?;
+        let spk_pub_raw = strip_curve_prefix(
+            &spk_pub_curve_prefixed.ok_or(StanzaError::MissingElement("signedPreKeyPublic"))?,
+        )?;
+        let mut sig_stuffed =
+            spk_sig_stuffed.ok_or(StanzaError::MissingElement("signedPreKeySignature"))?;
         if sig_stuffed.len() != 64 {
-            return Err(StanzaError::MalformedSignedPreKeySignature(sig_stuffed.len()));
+            return Err(StanzaError::MalformedSignedPreKeySignature(
+                sig_stuffed.len(),
+            ));
         }
         // Pull the stuffed sign bit off byte 63's bit 7, clear it.
         let set_sign_bit = (sig_stuffed[63] >> 7) & 1 == 1;
         sig_stuffed[63] &= 0x7F;
         let spk_sig: [u8; 64] = sig_stuffed.try_into().expect("len checked");
 
-        let ik_raw =
-            strip_curve_prefix(&ik_curve_prefixed.ok_or(StanzaError::MissingElement("identityKey"))?)?;
+        let ik_raw = strip_curve_prefix(
+            &ik_curve_prefixed.ok_or(StanzaError::MissingElement("identityKey"))?,
+        )?;
         let identity_key_ed = omemo_xeddsa::curve25519_pub_to_ed25519_pub(&ik_raw, set_sign_bit);
 
         Ok(Self {
@@ -489,7 +500,7 @@ impl DeviceList {
         w.write_event(Event::Start(list_el.borrow()))?;
 
         for id in &self.devices {
-            let id_str = id.to_string();
+            let id_str = crate::device_id_str(*id);
             let mut dev = BytesStart::new("device");
             dev.push_attribute(("id", id_str.as_str()));
             w.write_event(Event::Empty(dev.borrow()))?;

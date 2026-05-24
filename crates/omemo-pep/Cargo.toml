@@ -27,3 +27,9 @@ omemo-session = { path = "../omemo-session" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 serial_test = "3"
+# Used only by `tests/python_interop_session.rs` (gated behind
+# `#[ignore]`). Drives a Python subprocess to confirm python-twomemo
+# parses the same KEX bytes / multi-recipient stanza shape Rust
+# emits.
+serde_json = { workspace = true }
+hex = { workspace = true }
