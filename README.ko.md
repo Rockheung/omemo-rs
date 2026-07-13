@@ -1,9 +1,7 @@
 # omemo-rs
 
 XMPP를 위한 **OMEMO 2** (XEP-0384 v0.9) 의 순수 Rust · MIT 라이선스 구현입니다.
-런타임 의존성 그래프에 AGPL 코드를 끌어들이지 않으면서, XMPP 기반 봇 오케스트레이터
-([nan-curunir](https://github.com/Rockheung/nan-curunir)의 후속 프로젝트)의 E2EE
-계층으로 사용하기 위해 만들었습니다.
+런타임 의존성 그래프에 AGPL 코드를 끌어들이지 않습니다.
 
 다른 언어로 보기: [English](README.md)
 
@@ -39,8 +37,7 @@ OMEMO 2 만 구현합니다.
 | 7.4 | `omemo-pep` dual-backend | ✅ | 평행 `*_oldmemo` 플로우 + 듀얼 네임스페이스 `wait_for_encrypted_any` |
 | 7.5 | oldmemo cross-impl 게이트 | ✅ | `python_interop --backend oldmemo` 양방향 (실제 XMPP) |
 | 8 | Converse.js E2E rig | ✅ | 멀티 세션 브라우저 ↔ CLI E2E (`docs/converse-e2e.md`) |
-| 9 | Stdio 데몬 (nan-curunir용 API) | ✅ | JSON Lines 데몬, 1:1 + MUC OMEMO 2 (`docs/daemon-protocol.md`) |
-| 10 | nan-curunir 마이그레이션 | ✅ | 봇 오케스트레이터 XMPP 위에서 e2e 게이트 통과 (다운스트림: `nan-curunir/docs/migration-xmpp.md`) |
+| 9 | Stdio 데몬 | ✅ | JSON Lines 데몬, 1:1 + MUC OMEMO 2 (`docs/daemon-protocol.md`) |
 
 암호 계층은 모든 픽스처에서 Syndace Python 스택과 byte-equal 로 검증됩니다.
 `cargo test --workspace` 는 64개의 unit/replay 테스트를 통과하며,

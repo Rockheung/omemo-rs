@@ -1,8 +1,6 @@
 # omemo-rs Architecture
 
-Pure-Rust implementation of **OMEMO 2** (XEP-0384 v0.9) for use as the E2EE
-layer of an XMPP-based bot orchestrator (the planned successor to
-[nan-curunir](https://github.com/Rockheung/nan-curunir)). This document is
+Pure-Rust implementation of **OMEMO 2** (XEP-0384 v0.9). This document is
 intended to be detailed enough that the project can be rebuilt from scratch
 with no other source than these docs.
 
@@ -52,8 +50,7 @@ what's new is async orchestration and presence/PEP discovery flows.
 **Layer C — External-client interop (Stage 6)**
 
 Cross-implementation interop with Conversations (Android) and Dino
-(Linux desktop), DM and MUC. Passing this layer unlocks v0.1.0 and the
-nan-curunir migration off matrix-sdk (the original motivation, §1).
+(Linux desktop), DM and MUC. Passing this layer unlocks v0.1.0.
 
 ### Why this layering matters
 
@@ -73,10 +70,10 @@ This is the practical dividend of the replay-based test strategy
 
 ## 1. Why this project exists
 
-`nan-curunir` is a Matrix-based AI bot manager. The team running it found
-matrix-sdk (0.9, mid-2026) too unstable for production: cross-signing UIAA
-edge cases, frequent crypto-store-loss recovery code, Continuwuity-specific
-admin-room API quirks, and a generally heavy E2EE machinery.
+matrix-sdk (0.9, mid-2026) proved too unstable for production use:
+cross-signing UIAA edge cases, frequent crypto-store-loss recovery code,
+Continuwuity-specific admin-room API quirks, and a generally heavy E2EE
+machinery.
 
 XMPP is far simpler as a wire protocol (XML stanzas, well-defined XEPs), with
 multiple battle-tested servers (Prosody, ejabberd, Snikket). The trade-off
@@ -85,7 +82,7 @@ reference is libsignal, which is **AGPL-3.0**, and would force the rewrite
 onto AGPL.
 
 This project produces a permissively-licensed (MIT) Rust OMEMO 2 stack so
-the bot manager can be rewritten in Rust with the same licence as today.
+downstream consumers can stay MIT.
 
 ## 2. Scope
 

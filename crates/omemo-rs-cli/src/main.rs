@@ -156,7 +156,7 @@ enum Cmd {
     },
     /// Long-running JSON-Lines stdio daemon. Stays connected,
     /// accepts commands on stdin, emits events on stdout — for
-    /// orchestrator integration (e.g. nan-curunir). See
+    /// orchestrator integration. See
     /// `crates/omemo-rs-cli/src/daemon.rs` and
     /// `docs/daemon-protocol.md`.
     Daemon {
