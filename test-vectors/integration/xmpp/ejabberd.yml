@@ -109,8 +109,8 @@ api_permissions:
       - ejabberd_ctl
     who: all
     what: "*"
-  # Loopback IP-based admin access — allows nan-curunir's
-  # XmppAccountManager (sibling docker container or host process)
+  # Loopback IP-based admin access — allows an orchestrator
+  # (sibling docker container or host process)
   # to drive `register` / `create_room` / `set_room_affiliation`
   # over `mod_http_api` without requiring a per-call OAuth token.
   # Compose maps the API port to 0.0.0.0:5280 but inside the

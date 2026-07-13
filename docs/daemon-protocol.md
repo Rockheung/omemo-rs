@@ -1,9 +1,8 @@
 # omemo-rs-cli daemon JSON Lines protocol
 
 A spec for the `omemo-rs-cli daemon` subcommand's stdio interface.
-Designed to be the substrate the upcoming **nan-curunir** bot
-orchestrator runs on top of, but useful for any tool that wants to
-spawn an OMEMO-encrypted XMPP session as a child process.
+Useful for any tool that wants to spawn an OMEMO-encrypted XMPP
+session as a child process.
 
 ## Streams
 
@@ -318,6 +317,5 @@ exec 3>&-
 wait $DAEMON
 ```
 
-For nan-curunir-style integration the orchestrator typically wraps
-the daemon in a Rust child-process supervisor with `tokio::process::
-Child` — see `docs/architecture.md` for the planned layout.
+An orchestrator typically wraps the daemon in a Rust child-process
+supervisor with `tokio::process::Child`.

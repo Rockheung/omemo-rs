@@ -520,8 +520,6 @@ quirk rather than a spec violation on our side.
 - [ ] DM: Dino → omemo-rs
 - [ ] DM: omemo-rs → Dino
 - [ ] MUC: same matrix
-- [ ] Upgrade `nan-curunir` to use `omemo-rs` (separate repo, separate
-      task list — out of scope for this project's TODO)
 - [ ] Tag v0.1.0
 
 ---
@@ -710,8 +708,7 @@ Out of scope for Stage 8 (deferred):
       Automate when we land OMEMO 2 in Converse.js (Stage 9) and
       need regression coverage as a function of upstream changes.
 - [ ] `omemo-rs-cli` MUC send path — currently only browsers can
-      drive group chats end-to-end. CLI MUC join + send lands
-      with the bot orchestrator integration in `nan-curunir`.
+      drive group chats end-to-end.
 
 ---
 

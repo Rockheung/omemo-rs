@@ -1,6 +1,6 @@
 //! Long-running JSON Lines stdio daemon.
 //!
-//! An orchestrator (nan-curunir, an LLM bot, anything that wants to
+//! An orchestrator (an LLM bot, anything that wants to
 //! drive an OMEMO-encrypted XMPP session as a child process) spawns
 //! `omemo-rs-cli daemon` and communicates with it line-by-line:
 //!

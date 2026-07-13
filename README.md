@@ -1,9 +1,7 @@
 # omemo-rs
 
 A pure-Rust, MIT-licensed implementation of **OMEMO 2** (XEP-0384 v0.9) for
-XMPP. Built to serve as the E2EE layer of an XMPP-based bot orchestrator
-(the planned successor to [nan-curunir](https://github.com/Rockheung/nan-curunir)),
-without pulling AGPL dependencies into the runtime graph.
+XMPP, without AGPL dependencies in the runtime graph.
 
 Other languages: [한국어](README.ko.md)
 
@@ -39,8 +37,7 @@ See `docs/architecture.md` §3 for the full licence chain analysis and ADR-002.
 | 7.4 | `omemo-pep` dual-backend | ✅ | parallel `*_oldmemo` flow + dual-namespace `wait_for_encrypted_any` |
 | 7.5 | oldmemo cross-impl gate | ✅ | `python_interop --backend oldmemo` both directions on real XMPP |
 | 8 | Converse.js E2E rig | ✅ | multi-session browser ↔ CLI E2E (`docs/converse-e2e.md`) |
-| 9 | Stdio daemon (nan-curunir-shaped API) | ✅ | JSON Lines daemon with 1:1 + MUC OMEMO 2 (`docs/daemon-protocol.md`) |
-| 10 | nan-curunir migration | ✅ | bot orchestrator on XMPP — full e2e gate green (downstream repo: `nan-curunir/docs/migration-xmpp.md`) |
+| 9 | Stdio daemon | ✅ | JSON Lines daemon with 1:1 + MUC OMEMO 2 (`docs/daemon-protocol.md`) |
 
 The crypto layer is byte-equal with the Syndace Python stack on every
 fixture. `cargo test --workspace` passes 64 unit/replay tests; an

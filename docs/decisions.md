@@ -105,8 +105,7 @@ Concretely:
   installed base, which is the explicit downstream goal.
 * **Vendor `python-oldmemo` and accept AGPL for that crate**.
   Rejected: AGPL §13 would force source disclosure for any network
-  service using `omemo-rs`, which contradicts ADR-001's commercial
-  carve-out for `nan-curunir`'s successor.
+  service using `omemo-rs`.
 * **Wait for upstream to dual-license**. Rejected: Syndace has not
   signalled this and we can't depend on it.
 
@@ -244,7 +243,7 @@ License v2, §3.3 "Distribution of a Larger Work"):
 
 This is fundamentally different from AGPL/GPL/LGPL, which propagate at
 the *combined-work* level (and AGPL extends that to network use). Our
-MIT crates remain MIT. `nan-curunir`'s MIT licence chain is preserved.
+MIT crates remain MIT.
 
 The MPL FAQ confirms this in plain language:
 > "You can combine MPL-licensed code with code under a different licence
@@ -457,9 +456,8 @@ OMEMO 0.3.0 (`eu.siacs.conversations.axolotl`) reference implementation is
 `python-oldmemo`, which is also **AGPL-3.0** because it inherits from the
 libsignal-protocol-c codebase.
 
-The downstream consumer of `omemo-rs` is the Rust rewrite of
-`nan-curunir`, which is currently MIT. AGPL transitive deps are
-incompatible with that licence.
+`omemo-rs` is MIT. AGPL transitive deps are incompatible with that
+licence.
 
 ### Decision
 * Do not depend on `libsignal` (Rust).
@@ -468,8 +466,8 @@ incompatible with that licence.
   ported to Rust crypto primitives from RustCrypto.
 
 ### Alternatives considered
-* Re-license `nan-curunir` as AGPL — rejected; AGPL is invasive on
-  network services and the project author has commercial uses in mind.
+* Accept AGPL — rejected; AGPL is invasive on network services and
+  the project author has commercial uses in mind.
 * Use `vodozemac` (Apache-2.0) — vodozemac implements Olm/Megolm (Matrix
   E2EE), not Signal-style ratchet for OMEMO. Wire-format incompatible
   with OMEMO 2.
@@ -494,8 +492,7 @@ incompatible with that licence.
 **Stage**: pre-0
 
 ### Context
-`nan-curunir` is built on `matrix-sdk` 0.9 (mid-2026). Pain points
-observed:
+Pain points observed on `matrix-sdk` 0.9 (mid-2026):
 * E2EE crypto-store loss requires custom auto-rebootstrap code.
 * Cross-signing UIAA requires storing bot account passwords.
 * `Continuwuity` admin-room API requires bespoke HTTP polling code
@@ -516,7 +513,7 @@ current E2EE setup we need OMEMO support, hence this project.
 ### Consequences
 * New-skill territory for the project: XMPP / XEPs / PEP / SCE / OMEMO.
 * The transition is easier than feared because the bot orchestration
-  domain logic (~13K LOC of nan-curunir) is messenger-agnostic —
+  domain logic (~13K LOC) is messenger-agnostic —
   abstracted behind a `Messenger` trait. Only `matrix-common` and
   `channel-matrix` are messenger-specific and will be replaced with
   `omemo-rs` + `omemo-pep` + a thin XMPP-side `channel` crate.

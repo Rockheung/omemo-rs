@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "OMEMO chat CLI — one-shot send/recv plus a long-running JSON Lines daemon for orchestrator integration (nan-curunir successor)."
+description = "OMEMO chat CLI — one-shot send/recv plus a long-running JSON Lines daemon for orchestrator integration."
 
 [[bin]]
 name = "omemo-rs-cli"
